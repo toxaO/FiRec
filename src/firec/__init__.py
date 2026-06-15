@@ -1,0 +1,2 @@
+"""FiRec application package."""
+

@@ -1,0 +1,8 @@
+numpy
+opencv-python-headless
+tifffile
+PySide6
+pyqtgraph
+pytest
+pytest-qt
+PyInstaller
