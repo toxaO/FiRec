@@ -37,23 +37,29 @@ class ImageView(QGraphicsView):
         self._pixmap_item: QGraphicsPixmapItem | None = None
         self._radiation_item: QGraphicsPolygonItem | None = None
         self._light_item: QGraphicsPolygonItem | None = None
-        self.light_polygon: tuple[Point, Point, Point, Point] | None = None
         self._profile_line_items: list[QGraphicsItem] = []
         self._profile_cursor_point_items: list[QGraphicsItem] = []
         self._point_items: list[QGraphicsItem] = []
         self._center_point_items: list[QGraphicsItem] = []
+        self._vertex_items: list[QGraphicsItem] = []
+        self._edge_length_items: list[QGraphicsItem] = []
+        self._laser_center_items: list[QGraphicsItem] = []
         self._target_items: list[QGraphicsItem] = []
         self._handle_items: list[QGraphicsItem] = []
         self._image_shape: tuple[int, int] | None = None
         self.radiation_rect: RotatedRect | None = None
+        self.radiation_polygon: tuple[Point, Point, Point, Point] | None = None
         self.light_rect: RotatedRect | None = None
+        self.light_polygon: tuple[Point, Point, Point, Point] | None = None
         self.radiation_points: dict[str, Point] = {}
         self.center_points: dict[str, Point] = {}
+        self.laser_center: Point | None = None
         self.top_profile_y = 0.0
         self.bottom_profile_y = 0.0
         self.left_profile_x = 0.0
         self.right_profile_x = 0.0
         self.active_profile_orientation: str | None = None
+        self.visible_profile_lines: set[str] | None = None
         self.profile_lines_visible = True
         self.profile_line_offsets = {}
         self.selected_profile_line: str | None = None
@@ -63,9 +69,15 @@ class ImageView(QGraphicsView):
         self.show_radiation_center = True
         self.show_radiation_area = True
         self.show_radiation_points = True
+        self.show_radiation_edge_lengths = True
+        self.show_radiation_vertices = True
         self.show_light_edges = True
         self.show_light_center = True
+        self.show_light_edge_lengths = True
+        self.show_light_vertices = True
+        self.show_laser_center = True
         self.editing_enabled = True
+        self.pan_enabled = False
         self.on_rect_changed: Callable[[str, RotatedRect], None] | None = None
         self.on_tab_navigation: Callable[[bool], None] | None = None
         self.on_profile_lines_changed: Callable[[dict[str, tuple[Point, Point]]], None] | None = None
@@ -92,18 +104,24 @@ class ImageView(QGraphicsView):
         self._profile_cursor_point_items = []
         self._point_items = []
         self._center_point_items = []
+        self._vertex_items = []
+        self._edge_length_items = []
+        self._laser_center_items = []
         self._pixmap_item = self.scene().addPixmap(pixmap)
         self._image_shape = (height, width)
         self.radiation_rect = None
+        self.radiation_polygon = None
         self.light_rect = None
         self.light_polygon = None
         self.radiation_points = {}
         self.center_points = {}
+        self.laser_center = None
         self.top_profile_y = height * 0.25
         self.bottom_profile_y = height * 0.75
         self.left_profile_x = width * 0.25
         self.right_profile_x = width * 0.75
         self.active_profile_orientation = None
+        self.visible_profile_lines = None
         self.profile_lines_visible = True
         self.profile_line_offsets = {}
         self.selected_profile_line = "top"
@@ -122,6 +140,10 @@ class ImageView(QGraphicsView):
 
     def set_profile_lines_visible(self, visible: bool) -> None:
         self.profile_lines_visible = visible
+        self._draw_profile_lines()
+
+    def set_visible_profile_lines(self, names: set[str] | None) -> None:
+        self.visible_profile_lines = names
         self._draw_profile_lines()
 
     def set_profile_line_positions(
@@ -174,12 +196,18 @@ class ImageView(QGraphicsView):
         self.center_points = points
         self._draw_center_points()
 
+    def set_laser_center(self, point: Point | None) -> None:
+        self.laser_center = point
+        self._draw_laser_center()
+
     def _draw_center_points(self) -> None:
         self._clear_center_point_items()
         for name, point in self.center_points.items():
             if name == "radiation" and not self.show_radiation_center:
                 continue
             if name == "light" and not self.show_light_center:
+                continue
+            if name == "laser" and not self.show_laser_center:
                 continue
             radius = 5
             dot = self.scene().addEllipse(
@@ -217,6 +245,14 @@ class ImageView(QGraphicsView):
         self.show_radiation_points = show
         self._draw_radiation_points()
 
+    def set_show_radiation_edge_lengths(self, show: bool) -> None:
+        self.show_radiation_edge_lengths = show
+        self._draw_edge_length_lines()
+
+    def set_show_radiation_vertices(self, show: bool) -> None:
+        self.show_radiation_vertices = show
+        self._draw_vertices()
+
     def set_show_light_edges(self, show: bool) -> None:
         self.show_light_edges = show
         self._sync_item_visibility()
@@ -226,14 +262,29 @@ class ImageView(QGraphicsView):
         self.show_light_center = show
         self._draw_center_points()
 
+    def set_show_light_edge_lengths(self, show: bool) -> None:
+        self.show_light_edge_lengths = show
+        self._draw_edge_length_lines()
+
+    def set_show_light_vertices(self, show: bool) -> None:
+        self.show_light_vertices = show
+        self._draw_vertices()
+
+    def set_show_laser_center(self, show: bool) -> None:
+        self.show_laser_center = show
+        self._draw_laser_center()
+
     def set_radiation_rect(self, rect: RotatedRect | None, reset_profile_lines: bool = True) -> None:
         self.radiation_rect = rect
+        self.radiation_polygon = None if rect is None else rect.ordered_points()
         if rect is None:
             if self._radiation_item is not None:
                 self.scene().removeItem(self._radiation_item)
                 self._radiation_item = None
             self._draw_profile_lines()
             self._emit_profile_lines_changed()
+            self._draw_edge_length_lines()
+            self._draw_vertices()
             return
         if reset_profile_lines:
             self.profile_line_offsets = {}
@@ -246,8 +297,16 @@ class ImageView(QGraphicsView):
         self._sync_item_visibility()
         self._draw_profile_lines()
         self._emit_profile_lines_changed()
+        self._draw_edge_length_lines()
+        self._draw_vertices()
 
-    def set_radiation_polygon(self, points: tuple[Point, Point, Point, Point], reset_profile_lines: bool = True) -> None:
+    def set_radiation_polygon(
+        self,
+        points: tuple[Point, Point, Point, Point],
+        reset_profile_lines: bool = True,
+        emit_profile_lines: bool = True,
+    ) -> None:
+        self.radiation_polygon = points
         if reset_profile_lines:
             self.profile_line_offsets = {}
         self._radiation_item = self._set_polygon_points_item(
@@ -258,16 +317,21 @@ class ImageView(QGraphicsView):
         )
         self._sync_item_visibility()
         self._draw_profile_lines()
-        self._emit_profile_lines_changed()
+        if emit_profile_lines:
+            self._emit_profile_lines_changed()
+        self._draw_edge_length_lines()
+        self._draw_vertices()
 
     def set_light_rect(self, rect: RotatedRect | None) -> None:
         self.light_rect = rect
-        self.light_polygon = None
+        self.light_polygon = None if rect is None else rect.ordered_points()
         if rect is None:
             if self._light_item is not None:
                 self.scene().removeItem(self._light_item)
                 self._light_item = None
             self._draw_selection_overlays()
+            self._draw_edge_length_lines()
+            self._draw_vertices()
             return
         self._light_item = self._set_polygon_item(
             self._light_item,
@@ -277,6 +341,8 @@ class ImageView(QGraphicsView):
         )
         self._sync_item_visibility()
         self._draw_selection_overlays()
+        self._draw_edge_length_lines()
+        self._draw_vertices()
 
     def set_light_polygon(self, points: tuple[Point, Point, Point, Point]) -> None:
         self.light_polygon = points
@@ -288,13 +354,15 @@ class ImageView(QGraphicsView):
         )
         self._sync_item_visibility()
         self._draw_selection_overlays()
+        self._draw_edge_length_lines()
+        self._draw_vertices()
 
     def set_editing_enabled(self, enabled: bool) -> None:
         self.editing_enabled = enabled
         self._draw_selection_overlays()
 
     def set_active_field(self, field: str) -> None:
-        if field not in ("radiation", "light"):
+        if field not in ("laser", "radiation", "light"):
             raise ValueError(f"Unknown field: {field}")
         self.active_field = field
         if self.selected_target not in EDGE_NAMES:
@@ -321,7 +389,24 @@ class ImageView(QGraphicsView):
     def reset_view(self) -> None:
         if self._pixmap_item is None:
             return
+        self.resetTransform()
         self.fitInView(self._pixmap_item, Qt.KeepAspectRatio)
+        self._emit_visible_scene_rect_changed()
+
+    def set_pan_enabled(self, enabled: bool) -> None:
+        self.pan_enabled = enabled
+        self.setCursor(Qt.OpenHandCursor if enabled else Qt.ArrowCursor)
+
+    def zoom_in(self) -> None:
+        self._zoom_by(1.1)
+
+    def zoom_out(self) -> None:
+        self._zoom_by(1.0 / 1.1)
+
+    def _zoom_by(self, factor: float) -> None:
+        if self._pixmap_item is None:
+            return
+        self.scale(factor, factor)
         self._emit_visible_scene_rect_changed()
 
     def wheelEvent(self, event) -> None:
@@ -341,7 +426,7 @@ class ImageView(QGraphicsView):
             return
 
         scene_pos = self.mapToScene(event.position().toPoint())
-        profile_line = self._hit_profile_line(scene_pos) if self.editing_enabled and self.active_field == "radiation" else None
+        profile_line = self._hit_profile_line(scene_pos) if self.editing_enabled and self.active_field in ("laser", "radiation") else None
         target = self._hit_active_target(scene_pos) if self.editing_enabled and self.active_field == "light" else None
         self._last_scene_pos = scene_pos
         self._last_view_pos = event.position()
@@ -354,8 +439,12 @@ class ImageView(QGraphicsView):
             self._drag_edge = target
             self._set_selected_profile_line(None)
             self.select_target(target)
-        else:
+        elif self.pan_enabled:
             self._drag_mode = "pan"
+            self._drag_edge = None
+            self.setCursor(Qt.ClosedHandCursor)
+        else:
+            self._drag_mode = None
             self._drag_edge = None
         event.accept()
 
@@ -383,6 +472,7 @@ class ImageView(QGraphicsView):
         ):
             dx = scene_pos.x() - self._last_scene_pos.x()
             dy = scene_pos.y() - self._last_scene_pos.y()
+            dx, dy = self._constrained_light_delta(self._drag_edge, dx, dy)
             self._update_active_rect(self._move_target(active_rect, self._drag_edge, dx, dy))
             self._last_scene_pos = scene_pos
         elif self._drag_mode == "pan":
@@ -397,6 +487,8 @@ class ImageView(QGraphicsView):
         self._drag_edge = None
         self._last_scene_pos = None
         self._last_view_pos = None
+        if self.pan_enabled:
+            self.setCursor(Qt.OpenHandCursor)
         event.accept()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
@@ -457,6 +549,7 @@ class ImageView(QGraphicsView):
         if self._nudge_profile_line_for_selected_edge(event, dx, dy):
             return
 
+        dx, dy = self._constrained_light_delta(self.selected_target, dx, dy)
         self._update_active_rect(self._move_target(active_rect, self.selected_target, dx, dy))
 
     def _nudge_profile_line_for_selected_edge(self, event: QKeyEvent, dx: float, dy: float) -> bool:
@@ -485,6 +578,8 @@ class ImageView(QGraphicsView):
     def _active_rect(self) -> RotatedRect | None:
         if self.active_field == "radiation":
             return self.radiation_rect
+        if self.active_field == "laser":
+            return None
         return self.light_rect
 
     def _update_active_rect(self, rect: RotatedRect) -> None:
@@ -560,6 +655,8 @@ class ImageView(QGraphicsView):
             self._radiation_item.setOpacity(1.0)
         if self._light_item is not None:
             self._light_item.setVisible(self.active_field == "light" and self.show_light_edges)
+        self._draw_edge_length_lines()
+        self._draw_vertices()
 
     def _clear_overlay_items(self) -> None:
         for item in self._target_items + self._handle_items:
@@ -573,6 +670,8 @@ class ImageView(QGraphicsView):
             return
         lines = self.profile_lines()
         for name, points in lines.items():
+            if self.visible_profile_lines is not None and name not in self.visible_profile_lines:
+                continue
             if self.active_profile_orientation is not None and name != self.active_profile_orientation:
                 continue
             start, end = points
@@ -596,6 +695,21 @@ class ImageView(QGraphicsView):
         for item in self._center_point_items:
             self.scene().removeItem(item)
         self._center_point_items = []
+
+    def _clear_vertex_items(self) -> None:
+        for item in self._vertex_items:
+            self.scene().removeItem(item)
+        self._vertex_items = []
+
+    def _clear_edge_length_items(self) -> None:
+        for item in self._edge_length_items:
+            self.scene().removeItem(item)
+        self._edge_length_items = []
+
+    def _clear_laser_center_items(self) -> None:
+        for item in self._laser_center_items:
+            self.scene().removeItem(item)
+        self._laser_center_items = []
 
     def profile_lines(self) -> dict[str, tuple[Point, Point]]:
         if self._image_shape is None:
@@ -662,6 +776,77 @@ class ImageView(QGraphicsView):
         self._draw_profile_lines()
         self._emit_profile_line_selected()
 
+    def _draw_edge_length_lines(self) -> None:
+        self._clear_edge_length_items()
+        fields = (
+            ("radiation", self.radiation_polygon, RADIATION_COLOR, self.show_radiation_edge_lengths),
+            ("light", self.light_polygon, LIGHT_EDGE_COLOR, self.show_light_edge_lengths),
+        )
+        for name, points, color, visible in fields:
+            if points is None or not visible:
+                continue
+            if name == "light" and self.active_field != "light":
+                continue
+            left_mid, right_mid, top_mid, bottom_mid = _edge_length_points(points)
+            for start, end in ((left_mid, right_mid), (top_mid, bottom_mid)):
+                item = self.scene().addLine(start.x, start.y, end.x, end.y, _dashed_pen(color, 1, [5, 4]))
+                item.setZValue(11)
+                self._edge_length_items.append(item)
+
+    def _draw_vertices(self) -> None:
+        self._clear_vertex_items()
+        fields = (
+            ("radiation", self.radiation_polygon, RADIATION_COLOR, self.show_radiation_vertices),
+            ("light", self.light_polygon, LIGHT_EDGE_COLOR, self.show_light_vertices),
+        )
+        vertex_labels = ("TL", "TR", "BR", "BL")
+        for name, points, color, visible in fields:
+            if points is None or not visible:
+                continue
+            if name == "light" and self.active_field != "light":
+                continue
+            for label_text, point in zip(vertex_labels, points, strict=True):
+                radius = 3
+                dot = self.scene().addEllipse(
+                    point.x - radius,
+                    point.y - radius,
+                    radius * 2,
+                    radius * 2,
+                    QPen(color, 1),
+                    QBrush(color),
+                )
+                label = self.scene().addText(f"{name[0].upper()}{label_text}")
+                label.setDefaultTextColor(color)
+                label.setPos(point.x + 4, point.y + 4)
+                dot.setZValue(12)
+                label.setZValue(12)
+                self._vertex_items.extend([dot, label])
+
+    def _draw_laser_center(self) -> None:
+        self._clear_laser_center_items()
+        if self.laser_center is None or not self.show_laser_center:
+            return
+        point = self.laser_center
+        radius = 6
+        items = [
+            self.scene().addLine(point.x - 10, point.y, point.x + 10, point.y, QPen(POINT_COLOR, 2)),
+            self.scene().addLine(point.x, point.y - 10, point.x, point.y + 10, QPen(POINT_COLOR, 2)),
+            self.scene().addEllipse(
+                point.x - radius,
+                point.y - radius,
+                radius * 2,
+                radius * 2,
+                QPen(Qt.white, 1),
+                QBrush(POINT_COLOR),
+            ),
+            self.scene().addText("laser"),
+        ]
+        items[-1].setDefaultTextColor(POINT_COLOR)
+        items[-1].setPos(point.x + 7, point.y + 7)
+        for item in items:
+            item.setZValue(15)
+            self._laser_center_items.append(item)
+
     def _draw_radiation_points(self) -> None:
         self._clear_point_items()
         if not self.show_radiation_points:
@@ -715,6 +900,8 @@ class ImageView(QGraphicsView):
         best_name = None
         best_distance = tolerance
         for name, points in self.profile_lines().items():
+            if self.visible_profile_lines is not None and name not in self.visible_profile_lines:
+                continue
             if self.active_profile_orientation is not None and name != self.active_profile_orientation:
                 continue
             distance = _distance_to_segment(scene_pos, points[0], points[1])
@@ -778,6 +965,15 @@ class ImageView(QGraphicsView):
         points[second] = points[second].moved(dx, dy)
         return tuple(points)
 
+    def _constrained_light_delta(self, target: str, dx: float, dy: float) -> tuple[float, float]:
+        if self.active_field != "light":
+            return dx, dy
+        if target in ("top", "bottom"):
+            return 0.0, dy
+        if target in ("left", "right"):
+            return dx, 0.0
+        return dx, dy
+
     def _visual_edge_map_points(self, points: tuple[Point, Point, Point, Point]) -> dict[str, str]:
         edge_points = self._polygon_edge_points(points)
         edge_centers = {
@@ -815,6 +1011,15 @@ class ImageView(QGraphicsView):
 
 def _midpoint(start: Point, end: Point) -> Point:
     return Point((start.x + end.x) / 2.0, (start.y + end.y) / 2.0)
+
+
+def _edge_length_points(points: tuple[Point, Point, Point, Point]) -> tuple[Point, Point, Point, Point]:
+    return (
+        _midpoint(points[3], points[0]),
+        _midpoint(points[1], points[2]),
+        _midpoint(points[0], points[1]),
+        _midpoint(points[2], points[3]),
+    )
 
 
 def _append_unique_point(points: list[Point], point: Point) -> None:

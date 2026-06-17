@@ -3,10 +3,13 @@ from math import atan2, degrees, hypot
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import (
     QApplication,
+    QAbstractItemView,
     QCheckBox,
+    QComboBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -17,18 +20,21 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
-    QPlainTextEdit,
     QScrollArea,
     QStatusBar,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from firec.core.analysis import (
-    compare_fields,
+    AnalysisResult,
+    FieldGeometry,
+    compare_field_polygons,
     invert_profile,
     line_profile,
     load_image,
@@ -36,7 +42,7 @@ from firec.core.analysis import (
 from firec.core.geometry import Point, RotatedRect
 from firec.gui.image_view import ImageView
 from firec.gui.profile_plot import ProfilePlot
-from firec.storage.repository import connect_database, export_rows_to_csv, fetch_analysis_rows, save_analysis
+from firec.storage.repository import connect_database, delete_analysis, export_rows_to_csv, fetch_analysis_rows, save_analysis
 
 
 PROFILE_POINT_NAMES = {
@@ -58,9 +64,11 @@ class MainWindow(QMainWindow):
         self.radiation_rect: RotatedRect | None = None
         self.radiation_polygon: tuple[Point, Point, Point, Point] | None = None
         self.light_rect: RotatedRect | None = None
+        self.laser_center: Point | None = None
         self.radiation_points: dict[str, Point] = {}
         self.profile_cursors: dict[str, float] = {}
-        self.selected_profile_line: str | None = "top"
+        self.selected_profile_line: str | None = "bottom"
+        self.settings = QSettings("FiRec", "FiRec")
         self.connection = connect_database("firec.sqlite")
 
         self.view = ImageView()
@@ -73,6 +81,10 @@ class MainWindow(QMainWindow):
         self.main_tabs = QTabWidget()
         self.main_tabs.currentChanged.connect(self._on_main_tab_changed)
         self.path_edit = QLineEdit()
+        self.dpi_spin = QDoubleSpinBox()
+        self.origin_combo = QComboBox()
+        self.record_origin_combo = QComboBox()
+        self.record_dpi_spin = QDoubleSpinBox()
         self.top_profile_plot = ProfilePlot("horizontal")
         self.bottom_profile_plot = ProfilePlot("horizontal")
         self.left_profile_plot = ProfilePlot("vertical")
@@ -86,11 +98,12 @@ class MainWindow(QMainWindow):
         for line_name, plot in self.profile_plots.items():
             plot.on_cursor_moved = self._on_profile_cursor_moved
             plot.on_selected = lambda line_name=line_name: self._on_profile_plot_selected(line_name)
-        self.result_text = QPlainTextEdit("No result")
-        self.result_text.setReadOnly(True)
-        self.result_text.setMinimumHeight(260)
+        self.result_tree = QTreeWidget()
+        self.result_tree.setHeaderLabels(["Item", "Value"])
+        self.result_tree.setMinimumHeight(260)
         self.results_table = QTableWidget()
-        self.current_stage = "radiation"
+        self.result_row_ids: list[int] = []
+        self.current_stage = "laser"
         self.stage_frames: dict[str, QGroupBox] = {}
         self.stage_controls: dict[str, list[QWidget]] = {}
         self.completed_stages: set[str] = set()
@@ -99,6 +112,7 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status)
 
         self._build_layout()
+        self._restore_settings()
         self.view.set_editing_enabled(False)
         self._sync_stage_controls()
         self.refresh_results_table()
@@ -112,23 +126,27 @@ class MainWindow(QMainWindow):
         side_layout = QVBoxLayout()
         side_layout.setContentsMargins(6, 6, 6, 6)
         side_layout.setSpacing(6)
+        laser_frame, laser_controls = self._laser_frame()
         radiation_frame, radiation_controls = self._radiation_frame()
         light_frame, light_controls = self._light_frame()
         result_frame, result_controls = self._result_frame()
         self.stage_frames = {
+            "laser": laser_frame,
             "radiation": radiation_frame,
             "light": light_frame,
             "result": result_frame,
         }
         self.stage_controls = {
+            "laser": laser_controls,
             "radiation": radiation_controls,
             "light": light_controls,
             "result": result_controls,
         }
+        side_layout.addLayout(self._step_nav_buttons())
+        side_layout.addWidget(laser_frame)
         side_layout.addWidget(radiation_frame)
         side_layout.addWidget(light_frame)
         side_layout.addWidget(result_frame)
-        side_layout.addLayout(self._step_nav_buttons())
         side_layout.addStretch(1)
         side_layout.addWidget(self._options_frame())
 
@@ -190,6 +208,7 @@ class MainWindow(QMainWindow):
         image_layout.addLayout(top_profile_row)
         image_layout.addLayout(image_row, 1)
         image_layout.addLayout(bottom_profile_row)
+        image_layout.addLayout(self._zoom_buttons())
 
         image_panel_layout = QVBoxLayout()
         image_panel_layout.setContentsMargins(0, 0, 0, 0)
@@ -213,13 +232,35 @@ class MainWindow(QMainWindow):
         return widget
 
     def _record_tab(self) -> QWidget:
+        self.record_origin_combo.addItem("Origin: Laser", "laser")
+        self.record_origin_combo.addItem("Origin: Radiation", "radiation")
+        self.record_origin_combo.addItem("Origin: Light", "light")
+        self.record_origin_combo.currentIndexChanged.connect(lambda index: self.refresh_results_table())
+
+        self.record_dpi_spin.setRange(0.0, 10000.0)
+        self.record_dpi_spin.setDecimals(1)
+        self.record_dpi_spin.setSingleStep(1.0)
+        self.record_dpi_spin.setSpecialValueText("px")
+        self.record_dpi_spin.setSuffix(" dpi")
+        self.record_dpi_spin.setMaximumWidth(110)
+        self.record_dpi_spin.valueChanged.connect(lambda value: self._on_record_dpi_changed())
+
         refresh_button = _button("Refresh")
         refresh_button.clicked.connect(self.refresh_results_table)
         export_button = _button("Export CSV")
         export_button.clicked.connect(self.export_csv)
+        delete_button = _button("Delete")
+        delete_button.clicked.connect(self.delete_selected_records)
+
+        self.results_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.results_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
 
         controls = QHBoxLayout()
+        controls.addWidget(self.record_origin_combo)
+        controls.addWidget(QLabel("DPI"))
+        controls.addWidget(self.record_dpi_spin)
         controls.addWidget(export_button)
+        controls.addWidget(delete_button)
         controls.addWidget(refresh_button)
         controls.addStretch(1)
 
@@ -235,6 +276,14 @@ class MainWindow(QMainWindow):
         browse_button = _button("Browse")
         browse_button.clicked.connect(self.browse_image_path)
 
+        self.dpi_spin.setRange(0.0, 10000.0)
+        self.dpi_spin.setDecimals(1)
+        self.dpi_spin.setSingleStep(1.0)
+        self.dpi_spin.setSpecialValueText("px")
+        self.dpi_spin.setSuffix(" dpi")
+        self.dpi_spin.setMaximumWidth(110)
+        self.dpi_spin.valueChanged.connect(lambda value: self._on_dpi_changed())
+
         self.path_edit.returnPressed.connect(self.load_from_path_edit)
         self.path_edit.setPlaceholderText("TIFF image path")
         self.path_edit.setMinimumWidth(320)
@@ -242,10 +291,45 @@ class MainWindow(QMainWindow):
         layout = QHBoxLayout()
         layout.addWidget(self.path_edit, 1)
         layout.addWidget(browse_button)
+        layout.addWidget(QLabel("DPI"))
+        layout.addWidget(self.dpi_spin)
         return layout
 
+    def _zoom_buttons(self) -> QHBoxLayout:
+        zoom_in_button = _button("Zoom In")
+        zoom_in_button.clicked.connect(self.view.zoom_in)
+        zoom_out_button = _button("Zoom Out")
+        zoom_out_button.clicked.connect(self.view.zoom_out)
+        pan_button = _button("Pan")
+        pan_button.setCheckable(True)
+        pan_button.toggled.connect(self.view.set_pan_enabled)
+        reset_button = _button("Reset")
+        reset_button.clicked.connect(self.view.reset_view)
+
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addStretch(1)
+        for button in (zoom_out_button, zoom_in_button, pan_button, reset_button):
+            layout.addWidget(button)
+        layout.addStretch(1)
+        return layout
+
+    def _laser_frame(self) -> tuple[QGroupBox, list[QWidget]]:
+        self.laser_status_label = QLabel("Set laser center.")
+        reset_button = _button("Reset")
+        reset_button.clicked.connect(self.reset_laser_center)
+
+        layout = QVBoxLayout()
+        layout.addWidget(self.laser_status_label)
+        layout.addWidget(reset_button)
+
+        frame = _frame("Laser Center")
+        frame.setLayout(layout)
+        frame.mousePressEvent = lambda event: self.go_to_stage("laser")
+        return frame, [reset_button]
+
     def _radiation_frame(self) -> tuple[QGroupBox, list[QWidget]]:
-        self.radiation_status_label = QLabel("Set points on four profiles.")
+        self.radiation_status_label = QLabel("Set radiation boundary points")
 
         layout = QVBoxLayout()
         layout.addWidget(self.radiation_status_label)
@@ -272,23 +356,38 @@ class MainWindow(QMainWindow):
         save_button = _button("Save")
         save_button.clicked.connect(self.save_current_result)
 
+        self.origin_combo.addItem("Origin: Laser", "laser")
+        self.origin_combo.addItem("Origin: Radiation", "radiation")
+        self.origin_combo.addItem("Origin: Light", "light")
+        self.origin_combo.currentIndexChanged.connect(lambda index: self._update_result_label())
+
+        controls = QHBoxLayout()
+        controls.addStretch(1)
+        controls.addWidget(self.origin_combo)
+        controls.addWidget(save_button)
+
         layout = QVBoxLayout()
-        layout.addWidget(self.result_text)
-        layout.addWidget(save_button)
+        layout.addWidget(self.result_tree)
+        layout.addLayout(controls)
 
         frame = _frame("Result")
         frame.setLayout(layout)
         frame.mousePressEvent = lambda event: self.go_to_stage("result")
-        return frame, [save_button]
+        return frame, [self.origin_combo, save_button]
 
     def _options_frame(self) -> QGroupBox:
         options = (
+            ("Laser Center", self.view.set_show_laser_center),
             ("Radiation Edge", self.view.set_show_radiation_edges),
             ("Radiation Center", self.view.set_show_radiation_center),
             ("Radiation Area", self.view.set_show_radiation_area),
-            ("Set Points", self.view.set_show_radiation_points),
+            ("Radiation Length", self.view.set_show_radiation_edge_lengths),
+            ("Radiation Vertices", self.view.set_show_radiation_vertices),
+            ("Radiation boundary", self.view.set_show_radiation_points),
             ("Light Edge", self.view.set_show_light_edges),
             ("Light Center", self.view.set_show_light_center),
+            ("Light Length", self.view.set_show_light_edge_lengths),
+            ("Light Vertices", self.view.set_show_light_vertices),
         )
         layout = QGridLayout()
         for index, (label, callback) in enumerate(options):
@@ -302,8 +401,8 @@ class MainWindow(QMainWindow):
 
     def _step_nav_buttons(self) -> QHBoxLayout:
         step_label = QLabel("step")
-        back_button = _button("▲ previous")
-        next_button = _button("▼ next")
+        back_button = _nav_button("▲ previous")
+        next_button = _nav_button("▼ next")
         back_button.clicked.connect(lambda: self.move_stage(True))
         next_button.clicked.connect(lambda: self.move_stage(False))
 
@@ -318,7 +417,7 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Open TIFF image",
-            str(Path.cwd()),
+            self.path_edit.text().strip() or str(Path.cwd()),
             "Images (*.tif *.tiff);;All files (*)",
         )
         if path:
@@ -340,42 +439,81 @@ class MainWindow(QMainWindow):
             self.radiation_rect = None
             self.radiation_polygon = None
             self.light_rect = None
+            self.laser_center = None
             self.radiation_points = {}
             self.profile_cursors = {}
-            self.selected_profile_line = "top"
+            self.selected_profile_line = "bottom"
             self.view.set_image(self.image)
-            self._set_default_profile_lines()
+            self.laser_center = self._default_laser_center()
+            self._set_laser_profile_lines()
+            self._set_laser_profile_cursors()
+            self.view.set_laser_center(self.laser_center)
             self.view.set_radiation_rect(None)
             self.view.set_light_rect(None)
             self.completed_stages = set()
             self.path_edit.setText(str(path))
-            self.activate_stage("radiation")
+            self._save_settings()
+            self.activate_stage("laser")
             self.status.showMessage("Loaded image.")
             self._update_result_label()
         except Exception as error:
             QMessageBox.critical(self, "Load failed", str(error))
 
+    def _restore_settings(self) -> None:
+        last_path = self.settings.value("last_image_path", "", str)
+        if last_path:
+            self.path_edit.setText(last_path)
+        dpi = self.settings.value("dpi", 0.0, float)
+        self.dpi_spin.setValue(float(dpi or 0.0))
+        self.record_dpi_spin.setValue(float(dpi or 0.0))
+
+    def _save_settings(self) -> None:
+        self.settings.setValue("last_image_path", self.path_edit.text().strip())
+        self.settings.setValue("dpi", self.dpi_spin.value())
+
+    def _on_dpi_changed(self) -> None:
+        self._save_settings()
+        self._update_result_label()
+
+    def _on_record_dpi_changed(self) -> None:
+        self.settings.setValue("dpi", self.record_dpi_spin.value())
+        self.refresh_results_table()
+
     def activate_stage(self, stage: str) -> None:
         self.current_stage = stage
-        if stage == "radiation":
+        if stage == "laser":
+            self._set_laser_profile_lines()
+            self.view.set_active_field("laser")
+            self.view.set_visible_profile_lines({"left", "bottom"})
+            if self.selected_profile_line not in ("left", "bottom"):
+                self.selected_profile_line = "bottom"
+            self.view.select_profile_line(self.selected_profile_line)
+            self.view.set_profile_orientation(None)
+            self.view.set_profile_lines_visible(True)
+        elif stage == "radiation":
+            self._set_default_profile_lines()
             self.view.set_active_field("radiation")
             if self.selected_profile_line is None:
                 self.view.select_profile_line("top")
+            self.view.set_visible_profile_lines(None)
             self.view.set_profile_orientation(None)
             self.view.set_profile_lines_visible(True)
         elif stage == "light":
             self.view.select_profile_line(None)
             self.view.set_active_field("light")
+            self.view.set_visible_profile_lines(None)
             self.view.set_profile_orientation(None)
             self.view.set_profile_lines_visible(False)
         else:
             self.view.select_profile_line(None)
+            self.view.set_visible_profile_lines(None)
             self.view.set_profile_orientation(None)
             self.view.set_profile_lines_visible(False)
-        self.view.set_editing_enabled(stage in ("radiation", "light"))
+        self.view.set_editing_enabled(stage in ("laser", "radiation", "light"))
         self._sync_stage_controls()
-        if stage == "radiation":
+        if stage in ("laser", "radiation"):
             self._on_profile_lines_changed(self.view.profile_lines())
+        self._sync_laser_step_ui()
         self._sync_radiation_step_ui()
         self._sync_result_center_points()
         self.view.setVisible(True)
@@ -383,7 +521,7 @@ class MainWindow(QMainWindow):
         self.view.setFocus()
 
     def go_to_stage(self, stage: str) -> None:
-        stages = ("radiation", "light", "result")
+        stages = _stage_names()
         if stage not in stages:
             return
         current_index = stages.index(self.current_stage)
@@ -399,13 +537,19 @@ class MainWindow(QMainWindow):
                 return
 
     def move_stage(self, backward: bool = False) -> None:
+        if self.current_stage == "laser":
+            if backward:
+                return
+            if self.image is None:
+                QMessageBox.warning(self, "No image", "Load an image before moving to Radiation.")
+                return
+            self.confirm_laser_center()
+            return
         if self.current_stage == "radiation" and self.image is None:
             if not backward:
                 QMessageBox.warning(self, "No image", "Load an image before moving to Light.")
             return
-        if self.current_stage == "radiation" and self.image is not None:
-            if backward:
-                return
+        if self.current_stage == "radiation" and self.image is not None and not backward:
             self._capture_radiation_points()
             if self._build_radiation_from_points():
                 self.confirm_radiation_field()
@@ -415,7 +559,7 @@ class MainWindow(QMainWindow):
         if self.current_stage == "light" and not backward:
             self.confirm_light_field()
             return
-        stages = ("radiation", "light", "result")
+        stages = _stage_names()
         index = stages.index(self.current_stage)
         next_index = index - 1 if backward else index + 1
         next_index = max(0, min(len(stages) - 1, next_index))
@@ -424,7 +568,16 @@ class MainWindow(QMainWindow):
         self.activate_stage(stages[next_index])
 
     def _reset_after_stage(self, stage: str) -> None:
-        if stage == "radiation":
+        if stage == "laser":
+            self.radiation_rect = None
+            self.radiation_polygon = None
+            self.light_rect = None
+            self.radiation_points = {}
+            self.view.set_radiation_points(self.radiation_points)
+            self.view.set_radiation_rect(None)
+            self.view.set_light_rect(None)
+            self.completed_stages.clear()
+        elif stage == "radiation":
             self.light_rect = None
             self.view.set_light_rect(None)
             self.completed_stages.discard("radiation")
@@ -445,6 +598,56 @@ class MainWindow(QMainWindow):
             left_x=width * 0.25,
             right_x=width * 0.75,
         )
+
+    def _default_laser_center(self) -> Point | None:
+        shape = self.view.image_shape()
+        if shape is None:
+            return None
+        height, width = shape
+        return Point((width - 1.0) / 2.0, (height - 1.0) / 2.0)
+
+    def _set_laser_profile_lines(self) -> None:
+        if self.laser_center is None:
+            self.laser_center = self._default_laser_center()
+        if self.laser_center is None:
+            return
+        self.view.set_profile_line_positions(
+            bottom_y=self.laser_center.y,
+            left_x=self.laser_center.x,
+        )
+
+    def _set_laser_profile_cursors(self) -> None:
+        if self.laser_center is None:
+            self.laser_center = self._default_laser_center()
+        if self.laser_center is None:
+            return
+        self.profile_cursors["laser_x"] = self.laser_center.x
+        self.profile_cursors["laser_y"] = self.laser_center.y
+
+    def confirm_laser_center(self) -> None:
+        if self.current_stage != "laser":
+            return
+        if self.laser_center is None:
+            self.laser_center = self._default_laser_center()
+        if self.laser_center is None:
+            QMessageBox.warning(self, "No laser center", "Load an image before setting laser center.")
+            return
+        self.completed_stages.add("laser")
+        self.activate_stage("radiation")
+
+    def reset_laser_center(self) -> None:
+        if self.image is None:
+            return
+        center = self._default_laser_center()
+        if center is None:
+            return
+        self.laser_center = center
+        self._set_laser_profile_lines()
+        self._set_laser_profile_cursors()
+        self.view.set_laser_center(self.laser_center)
+        self._sync_laser_step_ui()
+        self._update_result_label()
+        self.status.showMessage("Reset laser center.")
 
     def confirm_radiation_field(self) -> None:
         if self.current_stage != "radiation":
@@ -515,7 +718,10 @@ class MainWindow(QMainWindow):
         if self.image_path is None or self.radiation_rect is None or self.light_rect is None:
             QMessageBox.warning(self, "Cannot save", "Set both rectangles before saving.")
             return
-        result = compare_fields(self.radiation_rect, self.light_rect)
+        result = self._current_analysis_result("laser", raw_pixels=True)
+        if result is None:
+            QMessageBox.warning(self, "Cannot save", "Set both rectangles before saving.")
+            return
         save_analysis(self.connection, self.image_path, result)
         self.refresh_results_table()
         self.status.showMessage("Saved analysis result.")
@@ -529,29 +735,44 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
-        rows = fetch_analysis_rows(self.connection)
+        rows = self._display_record_rows(fetch_analysis_rows(self.connection))
         if not rows:
             QMessageBox.information(self, "No data", "There are no saved results to export.")
             return
         export_rows_to_csv(rows, path)
         self.status.showMessage(f"Exported {path}")
 
+    def delete_selected_records(self) -> None:
+        selected_rows = sorted({index.row() for index in self.results_table.selectedIndexes()}, reverse=True)
+        if not selected_rows:
+            return
+        for row_index in selected_rows:
+            if 0 <= row_index < len(self.result_row_ids):
+                delete_analysis(self.connection, self.result_row_ids[row_index])
+        self.refresh_results_table()
+        self.status.showMessage(f"Deleted {len(selected_rows)} record(s).")
+
     def refresh_results_table(self) -> None:
-        rows = fetch_analysis_rows(self.connection)
+        raw_rows = fetch_analysis_rows(self.connection)
+        rows = self._display_record_rows(raw_rows)
         columns = [
             "created_at",
             "image_path",
-            "radiation_width",
-            "radiation_height",
-            "light_width",
-            "light_height",
-            "width_difference",
-            "height_difference",
-            "width_ratio",
-            "height_ratio",
-            "center_dx",
-            "center_dy",
+            "origin",
+            "dpi",
+            "unit",
+            "laser_center_x",
+            "laser_center_y",
+            "radiation_center_x",
+            "radiation_center_y",
+            "light_center_x",
+            "light_center_y",
+            "radiation_edge_length_x",
+            "radiation_edge_length_y",
+            "radiation_area",
+            "light_area",
         ]
+        self.result_row_ids = [int(row["id"]) for row in raw_rows]
         self.results_table.setColumnCount(len(columns))
         self.results_table.setHorizontalHeaderLabels(columns)
         self.results_table.setRowCount(len(rows))
@@ -560,6 +781,11 @@ class MainWindow(QMainWindow):
                 value = row.get(column, "")
                 self.results_table.setItem(row_index, column_index, QTableWidgetItem(str(value)))
         self.results_table.resizeColumnsToContents()
+
+    def _display_record_rows(self, rows: list[dict[str, object]]) -> list[dict[str, object]]:
+        origin = self.record_origin_combo.currentData() or "laser"
+        dpi = self.record_dpi_spin.value()
+        return [_record_display_row(row, origin, dpi) for row in rows]
 
     def _on_main_tab_changed(self, index: int) -> None:
         if index == 1:
@@ -580,7 +806,13 @@ class MainWindow(QMainWindow):
             for plot in self.profile_plots.values():
                 plot.set_profile(None, None, ())
             return
+        active_lines = {"left", "bottom"} if self.current_stage == "laser" else set(lines)
+        for name, plot in self.profile_plots.items():
+            if name not in active_lines:
+                plot.set_profile(None, None, ())
         for name, line in lines.items():
+            if name not in active_lines:
+                continue
             values = invert_profile(line_profile(self.image, line[0], line[1]))
             if name in ("top", "bottom"):
                 positions = np.linspace(line[0].x, line[1].x, values.size)
@@ -592,20 +824,29 @@ class MainWindow(QMainWindow):
             self.profile_plots[name].set_profile(
                 values,
                 positions,
-                _line_polygon_edge_positions(self.radiation_polygon, line, axis),
+                (),
             )
+        self._sync_laser_step_ui()
         self._sync_radiation_step_ui()
 
     def _on_profile_cursor_moved(self, name: str, value: float) -> None:
         self.profile_cursors[name] = value
+        if name in ("laser_x", "laser_y"):
+            self._update_laser_center_from_cursors()
+            self._sync_laser_step_ui()
+            self._update_result_label()
+            return
         self._sync_radiation_step_ui()
 
     def _on_profile_line_selected(self, line_name: str | None) -> None:
         self.selected_profile_line = line_name
+        self._sync_laser_step_ui()
         self._sync_radiation_step_ui()
 
     def _on_profile_plot_selected(self, line_name: str) -> None:
-        if self.current_stage != "radiation":
+        if self.current_stage not in ("laser", "radiation"):
+            return
+        if self.current_stage == "laser" and line_name not in ("left", "bottom"):
             return
         self.view.select_profile_line(line_name)
         self.view.setFocus()
@@ -629,16 +870,55 @@ class MainWindow(QMainWindow):
         self._sync_radiation_step_ui()
         self._update_result_label()
 
+    def _sync_laser_step_ui(self) -> None:
+        if not hasattr(self, "laser_status_label"):
+            return
+        if self.laser_center is None:
+            self.laser_status_label.setText("Set laser center.")
+        else:
+            self.laser_status_label.setText(f"Laser center: {_format_point(self.laser_center)}")
+        if self.current_stage != "laser":
+            return
+        self._set_laser_profile_cursors()
+        for line_name, plot in self.profile_plots.items():
+            if line_name not in ("left", "bottom"):
+                plot.set_selected(False)
+                plot.set_cursors({})
+                continue
+            cursor_name = "laser_y" if line_name == "left" else "laser_x"
+            if cursor_name not in self.profile_cursors:
+                self._set_laser_profile_cursors()
+            cursor_value = self.profile_cursors.get(cursor_name)
+            if cursor_value is None:
+                plot.set_cursors({})
+                continue
+            plot.set_selected(line_name == self.selected_profile_line)
+            plot.set_cursors({cursor_name: cursor_value})
+        self.view.set_profile_cursor_points({})
+        self.view.set_laser_center(self.laser_center)
+
+    def _update_laser_center_from_cursors(self) -> None:
+        if self.laser_center is None:
+            self.laser_center = self._default_laser_center()
+        if self.laser_center is None:
+            return
+        x = self.profile_cursors.get("laser_x", self.laser_center.x)
+        y = self.profile_cursors.get("laser_y", self.laser_center.y)
+        self.laser_center = Point(x, y)
+        self.view.set_laser_center(self.laser_center)
+        self.view.set_profile_line_positions(bottom_y=y, left_x=x)
+
     def _sync_radiation_step_ui(self) -> None:
         if not hasattr(self, "radiation_status_label"):
             return
-        self.radiation_status_label.setText(f"Set radiation points: {len(self.radiation_points)}/8")
+        self.radiation_status_label.setText(f"Set radiation boundary points")
         if self.current_stage != "radiation":
-            for plot in self.profile_plots.values():
-                plot.set_selected(False)
-                plot.set_cursors({})
-                plot.set_profile(None, None, ())
-            self.view.set_profile_cursor_points({})
+            if self.current_stage != "laser":
+                for plot in self.profile_plots.values():
+                    plot.set_selected(False)
+                    plot.set_cursors({})
+                    plot.set_profile(None, None, ())
+                self.view.set_profile_cursor_points({})
             return
         selected_line = self.selected_profile_line if self.current_stage == "radiation" else None
         preview_points: dict[str, Point] = {}
@@ -651,6 +931,7 @@ class MainWindow(QMainWindow):
             plot.set_cursors(cursors)
             preview_points.update(self._profile_cursor_points(line_name, cursors))
         self.view.set_profile_cursor_points(preview_points)
+        self._update_radiation_preview(preview_points)
 
     def _ensure_step_cursors(self, names: tuple[str, str], orientation: str) -> None:
         shape = self.view.image_shape()
@@ -677,24 +958,28 @@ class MainWindow(QMainWindow):
         return points
 
     def _build_radiation_from_points(self) -> bool:
-        required = ("L1", "R1", "L2", "R2", "U1", "D1", "U2", "D2")
-        if any(name not in self.radiation_points for name in required):
+        polygon = _radiation_polygon_from_points(self.radiation_points)
+        if polygon is None:
             return False
-        left_line = (self.radiation_points["L1"], self.radiation_points["L2"])
-        right_line = (self.radiation_points["R1"], self.radiation_points["R2"])
-        top_line = (self.radiation_points["U1"], self.radiation_points["U2"])
-        bottom_line = (self.radiation_points["D1"], self.radiation_points["D2"])
-        top_left = _line_intersection(left_line[0], left_line[1], top_line[0], top_line[1])
-        top_right = _line_intersection(right_line[0], right_line[1], top_line[0], top_line[1])
-        bottom_right = _line_intersection(right_line[0], right_line[1], bottom_line[0], bottom_line[1])
-        bottom_left = _line_intersection(left_line[0], left_line[1], bottom_line[0], bottom_line[1])
-        if None in (top_left, top_right, bottom_right, bottom_left):
-            return False
-        self.radiation_polygon = (top_left, top_right, bottom_right, bottom_left)
+        top_left, top_right, bottom_right, bottom_left = polygon
+        self.radiation_polygon = polygon
         self.radiation_rect = _rect_from_ordered_points(top_left, top_right, bottom_right, bottom_left)
         self.view.set_radiation_rect(self.radiation_rect, reset_profile_lines=False)
         self.view.set_radiation_polygon(self.radiation_polygon, reset_profile_lines=False)
         return True
+
+    def _update_radiation_preview(self, points: dict[str, Point]) -> None:
+        polygon = _radiation_polygon_from_points(points)
+        if polygon is None:
+            return
+        top_left, top_right, bottom_right, bottom_left = polygon
+        self.radiation_polygon = polygon
+        self.radiation_rect = _rect_from_ordered_points(top_left, top_right, bottom_right, bottom_left)
+        self.view.set_radiation_polygon(
+            self.radiation_polygon,
+            reset_profile_lines=False,
+            emit_profile_lines=False,
+        )
 
     def _sync_result_center_points(self) -> None:
         if self.current_stage != "result":
@@ -702,12 +987,12 @@ class MainWindow(QMainWindow):
             return
         points: dict[str, Point] = {}
         if self.radiation_polygon is not None:
-            points["radiation"] = _polygon_center(self.radiation_polygon)
+            points["radiation"] = _field_center(self.radiation_polygon)
         elif self.radiation_rect is not None:
-            points["radiation"] = _polygon_center(self.radiation_rect.ordered_points())
+            points["radiation"] = _field_center(self.radiation_rect.ordered_points())
         light_polygon = self._current_light_polygon()
         if light_polygon is not None:
-            points["light"] = _polygon_center(light_polygon)
+            points["light"] = _field_center(light_polygon)
         self.view.set_result_center_points(points)
 
     def _on_visible_scene_rect_changed(self, scene_rect) -> None:
@@ -715,19 +1000,62 @@ class MainWindow(QMainWindow):
             plot.set_visible_range(None)
 
     def _update_result_label(self) -> None:
-        if self.radiation_rect is None:
-            if self.radiation_points:
-                points = ", ".join(sorted(self.radiation_points))
-                self.result_text.setPlainText(f"Radiation points: {points}")
-            else:
-                self.result_text.setPlainText("No result")
+        if self.current_stage != "result":
+            self._clear_result_tree()
             return
-        lines = _field_summary_lines("Radiation", self.radiation_polygon or self.radiation_rect.ordered_points())
+        if self.radiation_rect is None:
+            self._clear_result_tree()
+            return
+        result = self._current_analysis_result()
+        if result is None:
+            self._clear_result_tree()
+            return
+        self._populate_result_tree(result)
+
+    def _clear_result_tree(self) -> None:
+        self.result_tree.clear()
+
+    def _populate_result_tree(self, result: AnalysisResult) -> None:
+        self.result_tree.clear()
+        self.result_tree.setHeaderLabels(["Item", "Value"])
+        area_unit = f"{result.unit}^2"
+        _add_tree_item(self.result_tree, "Origin", f"{result.origin_field} center")
+        _add_tree_item(self.result_tree, "Unit", result.unit if result.dpi <= 0 else f"{result.unit} (DPI {result.dpi:.1f})")
+        if result.laser_center is not None:
+            _add_tree_item(self.result_tree, "Laser Center", _format_point(result.laser_center))
+        radiation_item = _add_field_tree(self.result_tree, "Radiation", result.radiation_field, area_unit)
+        light_item = _add_field_tree(self.result_tree, "Light", result.light_field, area_unit)
+        radiation_item.setExpanded(True)
+        light_item.setExpanded(True)
+        self.result_tree.resizeColumnToContents(0)
+
+    def _current_analysis_result(self, origin_field: str | None = None, raw_pixels: bool = False) -> AnalysisResult | None:
+        if self.radiation_rect is None:
+            return None
+        radiation_polygon = self.radiation_polygon or self.radiation_rect.ordered_points()
         light_polygon = self._current_light_polygon()
-        if light_polygon is not None:
-            lines.append("")
-            lines.extend(_field_summary_lines("Light", light_polygon))
-        self.result_text.setPlainText("\n".join(lines))
+        if light_polygon is None:
+            return None
+        selected_origin = origin_field or self.origin_combo.currentData() or "laser"
+        if selected_origin == "laser" and self.laser_center is None:
+            return None
+        if raw_pixels:
+            selected_origin = "laser"
+            origin_point = Point(0.0, 0.0)
+            dpi = 0.0
+        else:
+            origin_point = self.laser_center if selected_origin == "laser" else None
+            dpi = self.dpi_spin.value()
+        return compare_field_polygons(
+            radiation_polygon,
+            light_polygon,
+            self.radiation_rect.angle,
+            self.light_rect.angle if self.light_rect is not None else 0.0,
+            selected_origin,
+            dpi,
+            origin_point,
+            self.laser_center,
+        )
 
     def _current_light_polygon(self) -> tuple[Point, Point, Point, Point] | None:
         if self.view.light_polygon is not None:
@@ -752,6 +1080,23 @@ class MainWindow(QMainWindow):
                 control.setEnabled(selected)
 
 
+def _radiation_polygon_from_points(points: dict[str, Point]) -> tuple[Point, Point, Point, Point] | None:
+    required = ("L1", "R1", "L2", "R2", "U1", "D1", "U2", "D2")
+    if any(name not in points for name in required):
+        return None
+    left_line = (points["L1"], points["L2"])
+    right_line = (points["R1"], points["R2"])
+    top_line = (points["U1"], points["U2"])
+    bottom_line = (points["D1"], points["D2"])
+    top_left = _line_intersection(left_line[0], left_line[1], top_line[0], top_line[1])
+    top_right = _line_intersection(right_line[0], right_line[1], top_line[0], top_line[1])
+    bottom_right = _line_intersection(right_line[0], right_line[1], bottom_line[0], bottom_line[1])
+    bottom_left = _line_intersection(left_line[0], left_line[1], bottom_line[0], bottom_line[1])
+    if None in (top_left, top_right, bottom_right, bottom_left):
+        return None
+    return top_left, top_right, bottom_right, bottom_left
+
+
 def _frame(title: str) -> QGroupBox:
     frame = QGroupBox(title)
     frame.setStyleSheet(_group_style())
@@ -768,12 +1113,52 @@ def _plain_frame(layout: QHBoxLayout | QVBoxLayout) -> QFrame:
 
 def _stage_title(stage: str, completed: bool) -> str:
     labels = {
+        "laser": "Laser Center",
         "radiation": "Radiation",
         "light": "Light",
         "result": "Result",
     }
     prefix = "✓ " if completed else ""
     return f"{prefix}{labels[stage]}"
+
+
+def _stage_names() -> tuple[str, str, str, str]:
+    return ("laser", "radiation", "light", "result")
+
+
+def _record_display_row(row: dict[str, object], origin: str, dpi: float) -> dict[str, object]:
+    scale = 25.4 / dpi if dpi > 0 else 1.0
+    unit = "mm" if dpi > 0 else "px"
+    laser = Point(float(row["laser_center_x_px"]), float(row["laser_center_y_px"]))
+    radiation = Point(float(row["radiation_center_x_px"]), float(row["radiation_center_y_px"]))
+    light = Point(float(row["light_center_x_px"]), float(row["light_center_y_px"]))
+    origin_point = {
+        "laser": laser,
+        "radiation": radiation,
+        "light": light,
+    }.get(origin, laser)
+
+    return {
+        "created_at": row["created_at"],
+        "image_path": row["image_path"],
+        "origin": origin,
+        "dpi": _round1(dpi) if dpi > 0 else 0.0,
+        "unit": unit,
+        "laser_center_x": _round1((laser.x - origin_point.x) * scale),
+        "laser_center_y": _round1((laser.y - origin_point.y) * scale),
+        "radiation_center_x": _round1((radiation.x - origin_point.x) * scale),
+        "radiation_center_y": _round1((radiation.y - origin_point.y) * scale),
+        "light_center_x": _round1((light.x - origin_point.x) * scale),
+        "light_center_y": _round1((light.y - origin_point.y) * scale),
+        "radiation_edge_length_x": _round1(float(row["radiation_edge_length_x_px"]) * scale),
+        "radiation_edge_length_y": _round1(float(row["radiation_edge_length_y_px"]) * scale),
+        "radiation_area": _round1(float(row["radiation_area_px2"]) * scale * scale),
+        "light_area": _round1(float(row["light_area_px2"]) * scale * scale),
+    }
+
+
+def _round1(value: float) -> float:
+    return round(float(value), 1)
 
 
 def _button(text: str) -> QPushButton:
@@ -784,12 +1169,20 @@ def _button(text: str) -> QPushButton:
     return button
 
 
+def _nav_button(text: str) -> QPushButton:
+    button = _button(text)
+    button.setMinimumWidth(96)
+    button.setMinimumHeight(32)
+    button.setMaximumWidth(150)
+    return button
+
+
 def _group_style() -> str:
-    return "QGroupBox { background: #f3f3f3; border: 0; border-radius: 4px; margin-top: 8px; } QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
+    return "QGroupBox { background: #f3f3f3; border: 1px solid #b8b8b8; border-radius: 4px; margin-top: 8px; } QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
 
 
 def _selected_group_style() -> str:
-    return "QGroupBox { background: #dfe9f6; border: 0; border-radius: 4px; margin-top: 8px; } QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
+    return "QGroupBox { background: #dfe9f6; border: 1px solid #5f8fc4; border-radius: 4px; margin-top: 8px; } QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
 
 
 def _sort_profile(positions: np.ndarray, values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -797,20 +1190,35 @@ def _sort_profile(positions: np.ndarray, values: np.ndarray) -> tuple[np.ndarray
     return positions[order], values[order]
 
 
-def _field_summary_lines(label: str, points: tuple[Point, Point, Point, Point]) -> list[str]:
-    center = _polygon_center(points)
-    edge_lengths = _polygon_edge_lengths(points)
-    area = _polygon_area(points)
+def _add_field_tree(parent: QTreeWidget | QTreeWidgetItem, label: str, field: FieldGeometry, area_unit: str) -> QTreeWidgetItem:
     vertex_labels = ("TL", "TR", "BR", "BL")
     edge_labels = ("top", "right", "bottom", "left")
-    lines = [f"{label}"]
-    lines.append(f"  center: {_format_point(center)}")
-    lines.append("  vertices:")
-    lines.extend(f"    {name}: {_format_point(point)}" for name, point in zip(vertex_labels, points))
-    lines.append("  edge lengths:")
-    lines.extend(f"    {name}: {length:.2f}" for name, length in zip(edge_labels, edge_lengths))
-    lines.append(f"  area: {area:.2f}")
-    return lines
+    field_item = _add_tree_item(parent, label)
+    _add_tree_item(field_item, "Center", _format_point(field.center))
+    _add_tree_item(field_item, "Area Length X", f"{field.area_length_x:.1f}")
+    _add_tree_item(field_item, "Area Length Y", f"{field.area_length_y:.1f}")
+    _add_tree_item(field_item, "Average Edge", f"{field.average_edge_length:.1f}")
+    _add_tree_item(field_item, "Area", f"{field.area:.1f} {area_unit}")
+
+    vertices_item = _add_tree_item(field_item, "Vertices")
+    for name, point in zip(vertex_labels, field.points, strict=True):
+        _add_tree_item(vertices_item, name, _format_point(point))
+    vertices_item.setExpanded(False)
+
+    edge_item = _add_tree_item(field_item, "Edge Lengths")
+    for name, length in zip(edge_labels, field.edge_lengths, strict=True):
+        _add_tree_item(edge_item, name, f"{length:.1f}")
+    edge_item.setExpanded(False)
+    return field_item
+
+
+def _add_tree_item(parent: QTreeWidget | QTreeWidgetItem, label: str, value: str = "") -> QTreeWidgetItem:
+    item = QTreeWidgetItem([label, value])
+    if isinstance(parent, QTreeWidget):
+        parent.addTopLevelItem(item)
+    else:
+        parent.addChild(item)
+    return item
 
 
 def _polygon_center(points: tuple[Point, Point, Point, Point]) -> Point:
@@ -818,6 +1226,24 @@ def _polygon_center(points: tuple[Point, Point, Point, Point]) -> Point:
         sum(point.x for point in points) / len(points),
         sum(point.y for point in points) / len(points),
     )
+
+
+def _field_center(points: tuple[Point, Point, Point, Point]) -> Point:
+    left_mid, right_mid, top_mid, bottom_mid = _edge_length_points(points)
+    return _line_intersection(left_mid, right_mid, top_mid, bottom_mid) or _polygon_center(points)
+
+
+def _edge_length_points(points: tuple[Point, Point, Point, Point]) -> tuple[Point, Point, Point, Point]:
+    return (
+        _midpoint(points[3], points[0]),
+        _midpoint(points[1], points[2]),
+        _midpoint(points[0], points[1]),
+        _midpoint(points[2], points[3]),
+    )
+
+
+def _midpoint(start: Point, end: Point) -> Point:
+    return Point((start.x + end.x) / 2.0, (start.y + end.y) / 2.0)
 
 
 def _polygon_edge_lengths(points: tuple[Point, Point, Point, Point]) -> tuple[float, float, float, float]:
@@ -836,7 +1262,7 @@ def _polygon_area(points: tuple[Point, Point, Point, Point]) -> float:
 
 
 def _format_point(point: Point) -> str:
-    return f"({point.x:.2f}, {point.y:.2f})"
+    return f"({point.x:.1f}, {point.y:.1f})"
 
 
 def _line_polygon_edge_positions(

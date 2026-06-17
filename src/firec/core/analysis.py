@@ -12,22 +12,22 @@ from firec.core.geometry import Point, RotatedRect
 class FieldGeometry:
     points: tuple[Point, ...]
     center: Point
-    width: float
-    height: float
     angle: float
     edge_lengths: tuple[float, float, float, float]
+    area: float
+    area_length_x: float
+    area_length_y: float
+    average_edge_length: float
 
 
 @dataclass(frozen=True)
 class AnalysisResult:
     radiation_field: FieldGeometry
     light_field: FieldGeometry
-    width_difference: float
-    height_difference: float
-    width_ratio: float
-    height_ratio: float
-    center_dx: float
-    center_dy: float
+    origin_field: str
+    dpi: float
+    unit: str
+    laser_center: Point | None = None
 
 
 @dataclass(frozen=True)
@@ -165,38 +165,141 @@ def ensure_grayscale(image: np.ndarray) -> np.ndarray:
 
 
 def compare_fields(radiation_field: RotatedRect, light_field: RotatedRect) -> AnalysisResult:
-    radiation = FieldGeometry(
-        points=radiation_field.ordered_points(),
-        center=radiation_field.center,
-        width=radiation_field.width,
-        height=radiation_field.height,
-        angle=radiation_field.angle,
-        edge_lengths=radiation_field.edge_lengths(),
+    return compare_field_polygons(
+        radiation_field.ordered_points(),
+        light_field.ordered_points(),
+        radiation_field.angle,
+        light_field.angle,
     )
-    light = FieldGeometry(
-        points=light_field.ordered_points(),
-        center=light_field.center,
-        width=light_field.width,
-        height=light_field.height,
-        angle=light_field.angle,
-        edge_lengths=light_field.edge_lengths(),
-    )
+
+
+def compare_field_polygons(
+    radiation_points: tuple[Point, Point, Point, Point],
+    light_points: tuple[Point, Point, Point, Point],
+    radiation_angle: float = 0.0,
+    light_angle: float = 0.0,
+    origin_field: str = "radiation",
+    dpi: float = 0.0,
+    origin_point: Point | None = None,
+    laser_center: Point | None = None,
+) -> AnalysisResult:
+    if origin_field not in ("laser", "radiation", "light"):
+        raise ValueError(f"Unknown origin field: {origin_field}")
+
+    pixel_radiation = _field_geometry(radiation_points, radiation_angle)
+    pixel_light = _field_geometry(light_points, light_angle)
+    if origin_field == "laser":
+        if origin_point is None:
+            raise ValueError("Laser origin requires an origin point.")
+        origin = origin_point
+    elif origin_field == "radiation":
+        origin = pixel_radiation.center
+    else:
+        origin = pixel_light.center
+    scale = _pixel_to_unit_scale(dpi)
+    unit = "mm" if scale != 1.0 else "px"
+
+    radiation = _converted_field_geometry(pixel_radiation, origin, scale)
+    light = _converted_field_geometry(pixel_light, origin, scale)
     return AnalysisResult(
         radiation_field=radiation,
         light_field=light,
-        width_difference=light.width - radiation.width,
-        height_difference=light.height - radiation.height,
-        width_ratio=_safe_ratio(light.width, radiation.width),
-        height_ratio=_safe_ratio(light.height, radiation.height),
-        center_dx=light.center.x - radiation.center.x,
-        center_dy=light.center.y - radiation.center.y,
+        origin_field=origin_field,
+        dpi=round(float(dpi), 1) if dpi > 0 else 0.0,
+        unit=unit,
+        laser_center=_converted_point(laser_center or origin_point, origin, scale)
+        if (laser_center or origin_point) is not None
+        else None,
     )
 
 
-def _safe_ratio(numerator: float, denominator: float) -> float:
-    if denominator == 0:
-        return 0.0
-    return numerator / denominator
+def _field_geometry(points: tuple[Point, Point, Point, Point], angle: float) -> FieldGeometry:
+    edge_lengths = tuple(_distance(points[index], points[(index + 1) % 4]) for index in range(4))
+    area_length_x_start = _midpoint(points[3], points[0])
+    area_length_x_end = _midpoint(points[1], points[2])
+    area_length_y_start = _midpoint(points[0], points[1])
+    area_length_y_end = _midpoint(points[2], points[3])
+    return FieldGeometry(
+        points=points,
+        center=_line_intersection(
+            area_length_x_start,
+            area_length_x_end,
+            area_length_y_start,
+            area_length_y_end,
+        )
+        or _polygon_center(points),
+        angle=angle,
+        edge_lengths=edge_lengths,
+        area=_polygon_area(points),
+        area_length_x=_distance(area_length_x_start, area_length_x_end),
+        area_length_y=_distance(area_length_y_start, area_length_y_end),
+        average_edge_length=sum(edge_lengths) / len(edge_lengths),
+    )
+
+
+def _converted_field_geometry(field: FieldGeometry, origin: Point, scale: float) -> FieldGeometry:
+    return FieldGeometry(
+        points=tuple(_converted_point(point, origin, scale) for point in field.points),
+        center=_converted_point(field.center, origin, scale),
+        angle=_round1(field.angle),
+        edge_lengths=tuple(_round1(length * scale) for length in field.edge_lengths),
+        area=_round1(field.area * scale * scale),
+        area_length_x=_round1(field.area_length_x * scale),
+        area_length_y=_round1(field.area_length_y * scale),
+        average_edge_length=_round1(field.average_edge_length * scale),
+    )
+
+
+def _converted_point(point: Point, origin: Point, scale: float) -> Point:
+    return Point(_round1((point.x - origin.x) * scale), _round1((point.y - origin.y) * scale))
+
+
+def _scaled_point(point: Point, scale: float) -> Point:
+    return Point(_round1(point.x * scale), _round1(point.y * scale))
+
+
+def _pixel_to_unit_scale(dpi: float) -> float:
+    if dpi <= 0:
+        return 1.0
+    return 25.4 / float(dpi)
+
+
+def _round1(value: float) -> float:
+    return round(float(value), 1)
+
+
+def _polygon_center(points: tuple[Point, Point, Point, Point]) -> Point:
+    return Point(
+        sum(point.x for point in points) / len(points),
+        sum(point.y for point in points) / len(points),
+    )
+
+
+def _polygon_area(points: tuple[Point, Point, Point, Point]) -> float:
+    area = 0.0
+    for index, point in enumerate(points):
+        next_point = points[(index + 1) % len(points)]
+        area += point.x * next_point.y - next_point.x * point.y
+    return abs(area) / 2.0
+
+
+def _midpoint(start: Point, end: Point) -> Point:
+    return Point((start.x + end.x) / 2.0, (start.y + end.y) / 2.0)
+
+
+def _line_intersection(a: Point, b: Point, c: Point, d: Point) -> Point | None:
+    denominator = (a.x - b.x) * (c.y - d.y) - (a.y - b.y) * (c.x - d.x)
+    if abs(denominator) < 1e-9:
+        return None
+    px = (
+        (a.x * b.y - a.y * b.x) * (c.x - d.x)
+        - (a.x - b.x) * (c.x * d.y - c.y * d.x)
+    ) / denominator
+    py = (
+        (a.x * b.y - a.y * b.x) * (c.y - d.y)
+        - (a.y - b.y) * (c.x * d.y - c.y * d.x)
+    ) / denominator
+    return Point(float(px), float(py))
 
 
 def _distance(start: Point, end: Point) -> float:

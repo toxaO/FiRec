@@ -1,8 +1,10 @@
+import sqlite3
+
 import numpy as np
 import cv2
 
 from firec.core.analysis import (
-    compare_fields,
+    compare_field_polygons,
     detect_radiation_field,
     invert_profile,
     line_profile,
@@ -11,7 +13,8 @@ from firec.core.analysis import (
     rotate_image_to_align_rect,
 )
 from firec.core.geometry import Point, RotatedRect
-from firec.storage.repository import connect_database, fetch_analysis_rows, save_analysis
+from firec.gui.app import _record_display_row
+from firec.storage.repository import connect_database, delete_analysis, fetch_analysis_rows, save_analysis
 
 
 def test_load_image_reads_tiff(tmp_path):
@@ -103,14 +106,158 @@ def test_save_and_fetch_analysis(tmp_path):
     connection = connect_database(database_path)
     radiation = RotatedRect(Point(10, 10), width=20, height=30, angle=0)
     light = RotatedRect(Point(11, 12), width=25, height=35, angle=0)
-    result = compare_fields(radiation, light)
+    result = compare_field_polygons(
+        radiation.ordered_points(),
+        light.ordered_points(),
+        origin_field="laser",
+        origin_point=Point(0, 0),
+    )
 
     save_analysis(connection, "image.tif", result)
     rows = fetch_analysis_rows(connection)
 
     assert len(rows) == 1
     assert rows[0]["image_path"] == "image.tif"
-    assert rows[0]["width_difference"] == 5
-    assert rows[0]["height_difference"] == 5
-    assert rows[0]["width_ratio"] == 1.25
-    assert rows[0]["center_dx"] == 1
+    assert rows[0]["source_dpi"] == 0
+    assert rows[0]["laser_center_x_px"] == 0
+    assert rows[0]["laser_center_y_px"] == 0
+    assert rows[0]["radiation_center_x_px"] == 10
+    assert rows[0]["radiation_center_y_px"] == 10
+    assert rows[0]["light_center_x_px"] == 11
+    assert rows[0]["light_center_y_px"] == 12
+    assert rows[0]["radiation_edge_length_x_px"] == 20
+    assert rows[0]["radiation_edge_length_y_px"] == 30
+    assert rows[0]["radiation_area_px2"] == 600
+
+
+def test_record_display_row_converts_origin_and_dpi():
+    row = {
+        "created_at": "2026-01-01T00:00:00",
+        "image_path": "image.tif",
+        "source_dpi": 0.0,
+        "laser_center_x_px": 0.0,
+        "laser_center_y_px": 0.0,
+        "radiation_center_x_px": 10.0,
+        "radiation_center_y_px": 20.0,
+        "light_center_x_px": 20.0,
+        "light_center_y_px": 40.0,
+        "radiation_edge_length_x_px": 30.0,
+        "radiation_edge_length_y_px": 40.0,
+        "radiation_area_px2": 1200.0,
+        "light_area_px2": 2400.0,
+    }
+
+    display = _record_display_row(row, "light", 254.0)
+
+    assert display["origin"] == "light"
+    assert display["unit"] == "mm"
+    assert display["dpi"] == 254.0
+    assert display["laser_center_x"] == -2.0
+    assert display["laser_center_y"] == -4.0
+    assert display["radiation_center_x"] == -1.0
+    assert display["radiation_center_y"] == -2.0
+    assert display["light_center_x"] == 0.0
+    assert display["light_center_y"] == 0.0
+    assert display["radiation_edge_length_x"] == 3.0
+    assert display["radiation_edge_length_y"] == 4.0
+    assert display["radiation_area"] == 12.0
+
+
+def test_delete_analysis_removes_selected_row(tmp_path):
+    database_path = tmp_path / "firec.sqlite"
+    connection = connect_database(database_path)
+    radiation = RotatedRect(Point(10, 10), width=20, height=30, angle=0)
+    light = RotatedRect(Point(11, 12), width=25, height=35, angle=0)
+    result = compare_field_polygons(
+        radiation.ordered_points(),
+        light.ordered_points(),
+        origin_field="laser",
+        origin_point=Point(0, 0),
+    )
+    save_analysis(connection, "first.tif", result)
+    save_analysis(connection, "second.tif", result)
+    first_id = int(fetch_analysis_rows(connection)[0]["id"])
+
+    delete_analysis(connection, first_id)
+    rows = fetch_analysis_rows(connection)
+
+    assert len(rows) == 1
+    assert rows[0]["image_path"] == "second.tif"
+
+
+def test_compare_field_polygons_converts_origin_and_dpi():
+    radiation = RotatedRect(Point(10, 10), width=20, height=30, angle=0).ordered_points()
+    light = RotatedRect(Point(20, 20), width=20, height=30, angle=0).ordered_points()
+
+    result = compare_field_polygons(radiation, light, origin_field="light", dpi=254)
+
+    assert result.unit == "mm"
+    assert result.dpi == 254.0
+    assert result.radiation_field.center.x == -1.0
+    assert result.radiation_field.center.y == -1.0
+    assert result.light_field.center.x == 0.0
+    assert result.light_field.center.y == 0.0
+    assert result.radiation_field.area_length_x == 2.0
+    assert result.radiation_field.area_length_y == 3.0
+    assert result.radiation_field.area == 6.0
+
+
+def test_compare_field_polygons_reports_laser_center_relative_to_origin():
+    radiation = RotatedRect(Point(10, 10), width=20, height=30, angle=0).ordered_points()
+    light = RotatedRect(Point(20, 20), width=20, height=30, angle=0).ordered_points()
+    laser_center = Point(5, 5)
+
+    laser_origin = compare_field_polygons(
+        radiation,
+        light,
+        origin_field="laser",
+        origin_point=laser_center,
+        laser_center=laser_center,
+    )
+    radiation_origin = compare_field_polygons(
+        radiation,
+        light,
+        origin_field="radiation",
+        laser_center=laser_center,
+    )
+
+    assert laser_origin.laser_center == Point(0.0, 0.0)
+    assert radiation_origin.laser_center == Point(-5.0, -5.0)
+
+
+def test_compare_field_polygons_uses_midline_intersection_as_center():
+    points = (
+        Point(0, 0),
+        Point(10, 0),
+        Point(8, 10),
+        Point(0, 9),
+    )
+
+    result = compare_field_polygons(points, points, origin_field="laser", origin_point=Point(0, 0))
+
+    assert result.radiation_field.center.x == 4.5
+    assert result.radiation_field.center.y == 4.8
+
+
+def test_connect_database_replaces_outdated_schema(tmp_path):
+    database_path = tmp_path / "firec.sqlite"
+    connection = sqlite3.connect(database_path)
+    connection.execute(
+        """
+        CREATE TABLE analyses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            image_path TEXT NOT NULL,
+            radiation_width REAL NOT NULL
+        )
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    connection = connect_database(database_path)
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(analyses)")}
+
+    assert "radiation_width" not in columns
+    assert "radiation_edge_length_x_px" in columns
+    assert "light_area_px2" in columns

@@ -1,10 +1,26 @@
 import csv
-import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
 
 from firec.core.analysis import AnalysisResult
+
+
+ANALYSES_COLUMNS = [
+    "created_at",
+    "image_path",
+    "source_dpi",
+    "laser_center_x_px",
+    "laser_center_y_px",
+    "radiation_center_x_px",
+    "radiation_center_y_px",
+    "light_center_x_px",
+    "light_center_y_px",
+    "radiation_edge_length_x_px",
+    "radiation_edge_length_y_px",
+    "radiation_area_px2",
+    "light_area_px2",
+]
 
 
 def connect_database(path: str | Path) -> sqlite3.Connection:
@@ -14,36 +30,27 @@ def connect_database(path: str | Path) -> sqlite3.Connection:
 
 
 def initialize_database(connection: sqlite3.Connection) -> None:
+    _drop_outdated_analyses_table(connection)
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS analyses (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             created_at TEXT NOT NULL,
             image_path TEXT NOT NULL,
-            radiation_center_x REAL NOT NULL,
-            radiation_center_y REAL NOT NULL,
-            radiation_width REAL NOT NULL,
-            radiation_height REAL NOT NULL,
-            radiation_angle REAL NOT NULL DEFAULT 0,
-            radiation_edge_lengths TEXT NOT NULL DEFAULT '[]',
-            radiation_points TEXT NOT NULL,
-            light_center_x REAL NOT NULL,
-            light_center_y REAL NOT NULL,
-            light_width REAL NOT NULL,
-            light_height REAL NOT NULL,
-            light_angle REAL NOT NULL DEFAULT 0,
-            light_edge_lengths TEXT NOT NULL DEFAULT '[]',
-            light_points TEXT NOT NULL,
-            width_difference REAL NOT NULL,
-            height_difference REAL NOT NULL,
-            width_ratio REAL NOT NULL DEFAULT 0,
-            height_ratio REAL NOT NULL DEFAULT 0,
-            center_dx REAL NOT NULL DEFAULT 0,
-            center_dy REAL NOT NULL DEFAULT 0
+            source_dpi REAL NOT NULL DEFAULT 0,
+            laser_center_x_px REAL NOT NULL,
+            laser_center_y_px REAL NOT NULL,
+            radiation_center_x_px REAL NOT NULL,
+            radiation_center_y_px REAL NOT NULL,
+            light_center_x_px REAL NOT NULL,
+            light_center_y_px REAL NOT NULL,
+            radiation_edge_length_x_px REAL NOT NULL,
+            radiation_edge_length_y_px REAL NOT NULL,
+            radiation_area_px2 REAL NOT NULL,
+            light_area_px2 REAL NOT NULL
         )
         """
     )
-    _ensure_columns(connection)
     connection.commit()
 
 
@@ -53,51 +60,33 @@ def save_analysis(connection: sqlite3.Connection, image_path: str | Path, result
         INSERT INTO analyses (
             created_at,
             image_path,
-            radiation_center_x,
-            radiation_center_y,
-            radiation_width,
-            radiation_height,
-            radiation_angle,
-            radiation_edge_lengths,
-            radiation_points,
-            light_center_x,
-            light_center_y,
-            light_width,
-            light_height,
-            light_angle,
-            light_edge_lengths,
-            light_points,
-            width_difference,
-            height_difference,
-            width_ratio,
-            height_ratio,
-            center_dx,
-            center_dy
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            source_dpi,
+            laser_center_x_px,
+            laser_center_y_px,
+            radiation_center_x_px,
+            radiation_center_y_px,
+            light_center_x_px,
+            light_center_y_px,
+            radiation_edge_length_x_px,
+            radiation_edge_length_y_px,
+            radiation_area_px2,
+            light_area_px2
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             datetime.now().isoformat(timespec="seconds"),
             Path(image_path).name,
-            result.radiation_field.center.x,
-            result.radiation_field.center.y,
-            result.radiation_field.width,
-            result.radiation_field.height,
-            result.radiation_field.angle,
-            json.dumps(result.radiation_field.edge_lengths, ensure_ascii=True),
-            _points_to_json(result.radiation_field.points),
-            result.light_field.center.x,
-            result.light_field.center.y,
-            result.light_field.width,
-            result.light_field.height,
-            result.light_field.angle,
-            json.dumps(result.light_field.edge_lengths, ensure_ascii=True),
-            _points_to_json(result.light_field.points),
-            result.width_difference,
-            result.height_difference,
-            result.width_ratio,
-            result.height_ratio,
-            result.center_dx,
-            result.center_dy,
+            _round1(result.dpi),
+            _round1(result.laser_center.x if result.laser_center is not None else 0.0),
+            _round1(result.laser_center.y if result.laser_center is not None else 0.0),
+            _round1(result.radiation_field.center.x),
+            _round1(result.radiation_field.center.y),
+            _round1(result.light_field.center.x),
+            _round1(result.light_field.center.y),
+            _round1(result.radiation_field.area_length_x),
+            _round1(result.radiation_field.area_length_y),
+            _round1(result.radiation_field.area),
+            _round1(result.light_field.area),
         ),
     )
     connection.commit()
@@ -107,34 +96,31 @@ def fetch_analysis_rows(connection: sqlite3.Connection) -> list[dict[str, object
     cursor = connection.execute(
         """
         SELECT
+            id,
             created_at,
             image_path,
-            radiation_center_x,
-            radiation_center_y,
-            radiation_width,
-            radiation_height,
-            radiation_angle,
-            radiation_edge_lengths,
-            radiation_points,
-            light_center_x,
-            light_center_y,
-            light_width,
-            light_height,
-            light_angle,
-            light_edge_lengths,
-            light_points,
-            width_difference,
-            height_difference,
-            width_ratio,
-            height_ratio,
-            center_dx,
-            center_dy
+            source_dpi,
+            laser_center_x_px,
+            laser_center_y_px,
+            radiation_center_x_px,
+            radiation_center_y_px,
+            light_center_x_px,
+            light_center_y_px,
+            radiation_edge_length_x_px,
+            radiation_edge_length_y_px,
+            radiation_area_px2,
+            light_area_px2
         FROM analyses
         ORDER BY created_at
         """
     )
     columns = [description[0] for description in cursor.description]
     return [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
+
+
+def delete_analysis(connection: sqlite3.Connection, analysis_id: int) -> None:
+    connection.execute("DELETE FROM analyses WHERE id = ?", (analysis_id,))
+    connection.commit()
 
 
 def export_rows_to_csv(rows: list[dict[str, object]], path: str | Path) -> None:
@@ -147,22 +133,17 @@ def export_rows_to_csv(rows: list[dict[str, object]], path: str | Path) -> None:
         writer.writerows(rows)
 
 
-def _points_to_json(points) -> str:
-    return json.dumps([{"x": point.x, "y": point.y} for point in points], ensure_ascii=True)
-
-
-def _ensure_columns(connection: sqlite3.Connection) -> None:
+def _drop_outdated_analyses_table(connection: sqlite3.Connection) -> None:
+    table = connection.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'analyses'"
+    ).fetchone()
+    if table is None:
+        return
     existing = {row[1] for row in connection.execute("PRAGMA table_info(analyses)")}
-    columns = {
-        "radiation_angle": "REAL NOT NULL DEFAULT 0",
-        "radiation_edge_lengths": "TEXT NOT NULL DEFAULT '[]'",
-        "light_angle": "REAL NOT NULL DEFAULT 0",
-        "light_edge_lengths": "TEXT NOT NULL DEFAULT '[]'",
-        "width_ratio": "REAL NOT NULL DEFAULT 0",
-        "height_ratio": "REAL NOT NULL DEFAULT 0",
-        "center_dx": "REAL NOT NULL DEFAULT 0",
-        "center_dy": "REAL NOT NULL DEFAULT 0",
-    }
-    for name, definition in columns.items():
-        if name not in existing:
-            connection.execute(f"ALTER TABLE analyses ADD COLUMN {name} {definition}")
+    expected = set(ANALYSES_COLUMNS)
+    if not expected.issubset(existing):
+        connection.execute("DROP TABLE analyses")
+
+
+def _round1(value: float) -> float:
+    return round(float(value), 1)
