@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QTreeWidget,
     QTreeWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -104,7 +105,8 @@ class MainWindow(QMainWindow):
         self.circle_x_spin = QDoubleSpinBox()
         self.circle_y_spin = QDoubleSpinBox()
         self.circle_radius_spin = QDoubleSpinBox()
-        self.circle_mean_label = QLabel("Mean: -")
+        self.circle_mean_label = QLabel("")
+        self.circle_options_visible = False
         self.top_profile_plot = ProfilePlot("horizontal")
         self.bottom_profile_plot = ProfilePlot("horizontal")
         self.left_profile_plot = ProfilePlot("vertical")
@@ -168,8 +170,8 @@ class MainWindow(QMainWindow):
         side_layout.addWidget(radiation_frame)
         side_layout.addWidget(light_frame)
         side_layout.addWidget(result_frame)
+        side_layout.addWidget(self._display_options_frame())
         side_layout.addStretch(1)
-        side_layout.addWidget(self._options_frame())
 
         side_panel = _plain_frame(side_layout)
         side_panel.setMinimumWidth(280)
@@ -381,20 +383,21 @@ class MainWindow(QMainWindow):
         self.smoothing_window_spin.setValue(5)
         self.smoothing_window_spin.valueChanged.connect(lambda value: self._redetect_radiation_lines())
 
-        self.raw_profile_check.setChecked(True)
-        self.smoothed_profile_check.setChecked(True)
-        self.raw_profile_check.toggled.connect(lambda visible: self._update_profile_visibility())
-        self.smoothed_profile_check.toggled.connect(lambda visible: self._update_profile_visibility())
-
         for spin in (self.circle_x_spin, self.circle_y_spin, self.circle_radius_spin):
             spin.setRange(0.0, 1_000_000.0)
             spin.setDecimals(1)
             spin.setSingleStep(1.0)
+            spin.setMaximumWidth(64)
         self.circle_x_spin.valueChanged.connect(lambda value: self._update_circle_overlay())
         self.circle_y_spin.valueChanged.connect(lambda value: self._update_circle_overlay())
         self.circle_radius_spin.valueChanged.connect(lambda value: self._update_circle_overlay())
         self.circle_radius_spin.setValue(10.0)
-        circle_button = _button("Circle Mean")
+        self.circle_mean_label.setFixedWidth(60)
+        self.circle_mean_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.circle_mean_label.setText("")
+        circle_button = _button("Mean")
+        circle_button.setMaximumWidth(64)
+        circle_button.setToolTip("Calculate circle mean.")
         circle_button.clicked.connect(self.calculate_circle_mean)
 
         settings_layout = QGridLayout()
@@ -407,26 +410,15 @@ class MainWindow(QMainWindow):
         settings_layout.addWidget(QLabel("Smooth px"), 3, 0)
         settings_layout.addWidget(self.smoothing_window_spin, 3, 1)
 
-        profile_layout = QHBoxLayout()
-        profile_layout.addWidget(self.raw_profile_check)
-        profile_layout.addWidget(self.smoothed_profile_check)
-        profile_layout.addStretch(1)
-
-        circle_layout = QGridLayout()
-        circle_layout.addWidget(QLabel("X"), 0, 0)
-        circle_layout.addWidget(self.circle_x_spin, 0, 1)
-        circle_layout.addWidget(QLabel("Y"), 1, 0)
-        circle_layout.addWidget(self.circle_y_spin, 1, 1)
-        circle_layout.addWidget(QLabel("R"), 2, 0)
-        circle_layout.addWidget(self.circle_radius_spin, 2, 1)
-        circle_layout.addWidget(circle_button, 3, 0)
-        circle_layout.addWidget(self.circle_mean_label, 3, 1)
-
         layout = QVBoxLayout()
         layout.addWidget(self.radiation_status_label)
         layout.addLayout(settings_layout)
-        layout.addLayout(profile_layout)
-        layout.addLayout(circle_layout)
+        profile_toggle_layout = QHBoxLayout()
+        profile_toggle_layout.addWidget(self.raw_profile_check)
+        profile_toggle_layout.addWidget(self.smoothed_profile_check)
+        profile_toggle_layout.addStretch(1)
+        layout.addLayout(profile_toggle_layout)
+        layout.addWidget(self._circle_mean_frame(circle_button))
         layout.addWidget(reset_button)
 
         frame = _frame("Radiation")
@@ -437,9 +429,6 @@ class MainWindow(QMainWindow):
             self.radiation_threshold_spin,
             self.radiation_center_spin,
             self.smoothing_window_spin,
-            self.circle_x_spin,
-            self.circle_y_spin,
-            self.circle_radius_spin,
             self.raw_profile_check,
             self.smoothed_profile_check,
             circle_button,
@@ -482,7 +471,7 @@ class MainWindow(QMainWindow):
         frame.mousePressEvent = lambda event: self.go_to_stage("result")
         return frame, [self.origin_combo, save_button]
 
-    def _options_frame(self) -> QGroupBox:
+    def _display_options_frame(self) -> QGroupBox:
         options = (
             ("Laser Center", self.view.set_show_laser_center),
             ("Radiation Edge", self.view.set_show_radiation_edges),
@@ -496,15 +485,88 @@ class MainWindow(QMainWindow):
             ("Light Length", self.view.set_show_light_edge_lengths),
             ("Light Vertices", self.view.set_show_light_vertices),
         )
-        layout = QGridLayout()
+        visibility_layout = QGridLayout()
         for index, (label, callback) in enumerate(options):
             check = QCheckBox(label)
             check.setChecked(True)
             check.toggled.connect(callback)
-            layout.addWidget(check, index // 2, index % 2)
+            visibility_layout.addWidget(check, index // 2, index % 2)
         frame = _frame("Options")
-        frame.setLayout(layout)
+        frame.setLayout(visibility_layout)
         return frame
+
+    def _circle_mean_frame(self, circle_button: QPushButton) -> QGroupBox:
+        self.raw_profile_check.setChecked(True)
+        self.smoothed_profile_check.setChecked(True)
+        self.raw_profile_check.toggled.connect(lambda visible: self._update_profile_visibility())
+        self.smoothed_profile_check.toggled.connect(lambda visible: self._update_profile_visibility())
+
+        circle_row = QHBoxLayout()
+        circle_row.setContentsMargins(0, 0, 0, 0)
+        circle_row.setSpacing(3)
+        circle_row.addStretch(1)
+        circle_row.addWidget(QLabel("X"))
+        circle_row.addWidget(self.circle_x_spin)
+        circle_row.addWidget(QLabel("Y"))
+        circle_row.addWidget(self.circle_y_spin)
+        circle_row.addWidget(QLabel("R"))
+        circle_row.addWidget(self.circle_radius_spin)
+        circle_row.addStretch(1)
+
+        circle_action_row = QHBoxLayout()
+        circle_action_row.setContentsMargins(0, 0, 0, 0)
+        circle_action_row.setSpacing(3)
+        circle_action_row.addStretch(1)
+        circle_action_row.addWidget(circle_button)
+        circle_action_row.addWidget(self.circle_mean_label)
+        circle_action_row.addStretch(1)
+
+        content = QWidget()
+        content_layout = QVBoxLayout()
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+        content_layout.addLayout(circle_row)
+        content_layout.addLayout(circle_action_row)
+        content.setLayout(content_layout)
+
+        frame, toggle = self._collapsible_section("Options", content, expanded=False)
+        toggle.toggled.connect(self._set_circle_options_visible)
+        self._set_circle_options_visible(False)
+        return frame
+
+    def _collapsible_section(self, title: str, content: QWidget, expanded: bool = False) -> tuple[QGroupBox, QToolButton]:
+        toggle = QToolButton()
+        toggle.setText(title)
+        toggle.setCheckable(True)
+        toggle.setChecked(expanded)
+        toggle.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+        toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        toggle.setAutoRaise(True)
+
+        body = QWidget()
+        body_layout = QVBoxLayout()
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(2)
+        body_layout.addWidget(content)
+        body.setLayout(body_layout)
+        body.setVisible(expanded)
+
+        def _sync(checked: bool) -> None:
+            body.setVisible(checked)
+            toggle.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
+
+        toggle.toggled.connect(_sync)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+        layout.addWidget(toggle)
+        layout.addWidget(body)
+
+        frame = QGroupBox()
+        frame.setLayout(layout)
+        _sync(expanded)
+        return frame, toggle
 
     def _step_nav_buttons(self) -> QHBoxLayout:
         step_label = QLabel("step")
@@ -595,7 +657,7 @@ class MainWindow(QMainWindow):
         self.film_pixel_spin.setRange(minimum - abs(maximum - minimum) * 2.0 - 1.0, maximum + abs(maximum - minimum) * 2.0 + 1.0)
         self.film_pixel_spin.setValue(maximum)
         self.film_pixel_spin.blockSignals(False)
-        self.circle_mean_label.setText("Mean: -")
+        self.circle_mean_label.setText("")
 
     def _restore_settings(self) -> None:
         last_path = self.settings.value("last_image_path", "", str)
@@ -1082,13 +1144,17 @@ class MainWindow(QMainWindow):
         return max_raw - smoothed, None, None
 
     def _update_circle_overlay(self) -> None:
-        if self.image is None:
+        if self.image is None or not self.circle_options_visible:
             self.view.set_circle_overlay(None, None)
             return
         self.view.set_circle_overlay(
             Point(self.circle_x_spin.value(), self.circle_y_spin.value()),
             self.circle_radius_spin.value(),
         )
+
+    def _set_circle_options_visible(self, visible: bool) -> None:
+        self.circle_options_visible = visible
+        self._update_circle_overlay()
 
     def _redetect_radiation_lines(self) -> None:
         if self.current_stage != "radiation" or self.image is None:
@@ -1117,7 +1183,7 @@ class MainWindow(QMainWindow):
         except ValueError as error:
             QMessageBox.warning(self, "Circle mean failed", str(error))
             return
-        self.circle_mean_label.setText(f"Mean: {value:.1f}")
+        self.circle_mean_label.setText(f"{value:.1f}")
 
     def _capture_radiation_points(self) -> None:
         lines = self.view.profile_lines()
