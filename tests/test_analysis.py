@@ -14,6 +14,7 @@ from firec.core.analysis import (
     moving_average_profile,
     rotate_image_around_rect,
     rotate_image_to_align_rect,
+    tiff_image_dpi,
 )
 from firec.core.geometry import Point, RotatedRect
 from firec.gui.app import _record_display_row
@@ -30,6 +31,15 @@ def test_load_image_reads_tiff(tmp_path):
     actual = load_image(image_path)
 
     assert actual.shape == expected.shape
+
+
+def test_tiff_image_dpi_reads_resolution_tags(tmp_path):
+    import tifffile
+
+    image_path = tmp_path / "image.tif"
+    tifffile.imwrite(image_path, np.zeros((4, 4), dtype=np.uint8), resolution=(300, 300), resolutionunit="INCH")
+
+    assert tiff_image_dpi(image_path) == 300.0
 
 
 def test_detect_radiation_field_finds_dark_rectangle():

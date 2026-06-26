@@ -7,6 +7,7 @@ from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QStatusBar,
+    QRadioButton,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
@@ -29,6 +31,7 @@ from PySide6.QtWidgets import (
     QTreeWidget,
     QTreeWidgetItem,
     QToolButton,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -43,6 +46,7 @@ from firec.core.analysis import (
     line_profile,
     load_image,
     moving_average_profile,
+    tiff_image_dpi,
 )
 from firec.core.geometry import Point, RotatedRect
 from firec.gui.image_view import ImageView
@@ -77,6 +81,12 @@ class MainWindow(QMainWindow):
         self._last_profile_lines: dict[str, tuple[Point, Point]] = {}
         self._profile_display_markers: dict[str, tuple[np.ndarray | None, float | None, tuple[float, float] | None]] = {}
         self._auto_detection_failures: dict[str, str] = {}
+        self.radiation_profile_mode = "auto"
+        self.radiation_profile_distance_mm = 40.0
+        self.manual_radiation_profile_lines: dict[str, float] | None = None
+        self._manual_radiation_profile_dirty = False
+        self._applying_radiation_profile_lines = False
+        self._loaded_image_default_dpi = 72.0
         self.selected_profile_line: str | None = "bottom"
         self.settings = QSettings("FiRec", "FiRec")
         self.connection = connect_database("firec.sqlite")
@@ -391,6 +401,30 @@ class MainWindow(QMainWindow):
         self.smoothing_window_spin.setValue(5)
         self.smoothing_window_spin.valueChanged.connect(lambda value: self._redetect_radiation_lines())
 
+        self.radiation_profile_auto_radio = QRadioButton("Auto")
+        self.radiation_profile_manual_radio = QRadioButton("Manual")
+        self.radiation_profile_mode_group = QButtonGroup(self)
+        self.radiation_profile_mode_group.addButton(self.radiation_profile_auto_radio)
+        self.radiation_profile_mode_group.addButton(self.radiation_profile_manual_radio)
+        self.radiation_profile_auto_radio.setChecked(True)
+        self.radiation_profile_auto_radio.toggled.connect(
+            lambda checked: checked and self._set_radiation_profile_mode("auto", update_ui=False)
+        )
+        self.radiation_profile_manual_radio.toggled.connect(
+            lambda checked: checked and self._set_radiation_profile_mode("manual", update_ui=False)
+        )
+
+        self.radiation_profile_distance_spin = QDoubleSpinBox()
+        self.radiation_profile_distance_spin.setRange(0.0, 1000.0)
+        self.radiation_profile_distance_spin.setDecimals(1)
+        self.radiation_profile_distance_spin.setSingleStep(1.0)
+        self.radiation_profile_distance_spin.setSuffix(" mm")
+        self.radiation_profile_distance_spin.setMaximumWidth(120)
+        self.radiation_profile_distance_spin.setValue(40.0)
+        self.radiation_profile_distance_spin.valueChanged.connect(
+            lambda value: self._on_radiation_profile_distance_changed()
+        )
+
         for spin in (self.circle_x_spin, self.circle_y_spin, self.circle_radius_spin):
             spin.setRange(0.0, 1_000_000.0)
             spin.setDecimals(1)
@@ -418,8 +452,55 @@ class MainWindow(QMainWindow):
         settings_layout.addWidget(QLabel("Smooth px"), 3, 0)
         settings_layout.addWidget(self.smoothing_window_spin, 3, 1)
 
+        auto_page = QGroupBox("Auto")
+        auto_layout = QVBoxLayout()
+        auto_layout.setContentsMargins(6, 6, 6, 6)
+        auto_layout.setSpacing(4)
+        auto_hint = QLabel("Place four profile lines at the same mm offset from the laser center.")
+        auto_hint.setWordWrap(True)
+        auto_row = QHBoxLayout()
+        auto_row.setContentsMargins(0, 0, 0, 0)
+        auto_row.setSpacing(4)
+        auto_row.addWidget(QLabel("Offset"))
+        auto_row.addWidget(self.radiation_profile_distance_spin)
+        auto_row.addStretch(1)
+        auto_layout.addWidget(auto_hint)
+        auto_layout.addLayout(auto_row)
+        auto_page.setLayout(auto_layout)
+
+        manual_page = QGroupBox("Manual")
+        manual_layout = QVBoxLayout()
+        manual_layout.setContentsMargins(6, 6, 6, 6)
+        manual_layout.setSpacing(4)
+        manual_hint = QLabel("Drag the profile lines directly. Reset returns them to the auto layout.")
+        manual_hint.setWordWrap(True)
+        manual_reset_button = _button("Reset")
+        manual_reset_button.clicked.connect(self.reset_radiation_profile_lines)
+        manual_row = QHBoxLayout()
+        manual_row.setContentsMargins(0, 0, 0, 0)
+        manual_row.setSpacing(4)
+        manual_row.addStretch(1)
+        manual_row.addWidget(manual_reset_button)
+        manual_layout.addWidget(manual_hint)
+        manual_layout.addLayout(manual_row)
+        manual_page.setLayout(manual_layout)
+
+        profile_mode_row = QHBoxLayout()
+        profile_mode_row.setContentsMargins(0, 0, 0, 0)
+        profile_mode_row.setSpacing(8)
+        profile_mode_row.addWidget(self.radiation_profile_auto_radio)
+        profile_mode_row.addWidget(self.radiation_profile_manual_radio)
+        profile_mode_row.addStretch(1)
+
+        profile_mode_stack = QStackedWidget()
+        profile_mode_stack.addWidget(auto_page)
+        profile_mode_stack.addWidget(manual_page)
+        self.radiation_profile_mode_stack = profile_mode_stack
+
         layout = QVBoxLayout()
         layout.addWidget(self.radiation_status_label)
+        layout.addLayout(profile_mode_row)
+        layout.addWidget(profile_mode_stack)
         layout.addLayout(settings_layout)
         profile_toggle_layout = QHBoxLayout()
         profile_toggle_layout.addWidget(self.raw_profile_check)
@@ -437,6 +518,10 @@ class MainWindow(QMainWindow):
             self.radiation_threshold_spin,
             self.radiation_center_spin,
             self.smoothing_window_spin,
+            self.radiation_profile_auto_radio,
+            self.radiation_profile_manual_radio,
+            self.radiation_profile_distance_spin,
+            manual_reset_button,
             self.raw_profile_check,
             self.smoothed_profile_check,
             circle_button,
@@ -613,6 +698,7 @@ class MainWindow(QMainWindow):
             self.original_image = load_image(path)
             self.image = self.original_image
             self.image_path = path
+            self._apply_default_dpi(path)
             self.radiation_rect = None
             self.radiation_polygon = None
             self.light_rect = None
@@ -623,6 +709,10 @@ class MainWindow(QMainWindow):
             self._last_profile_lines = {}
             self._profile_display_markers = {}
             self._auto_detection_failures = {}
+            self.radiation_profile_mode = "auto"
+            self.manual_radiation_profile_lines = None
+            self._manual_radiation_profile_dirty = False
+            self._applying_radiation_profile_lines = False
             self.selected_profile_line = "bottom"
             self.view.set_image(self.image)
             self._update_image_info()
@@ -667,6 +757,106 @@ class MainWindow(QMainWindow):
         self.film_pixel_spin.blockSignals(False)
         self.circle_mean_label.setText("")
 
+    def _apply_default_dpi(self, path: Path) -> None:
+        dpi = tiff_image_dpi(path)
+        if dpi is None or dpi <= 0:
+            previous = float(self.settings.value("dpi", 0.0, float) or 0.0)
+            dpi = previous if previous > 0 else 72.0
+        self._loaded_image_default_dpi = float(dpi)
+        for spin in (self.dpi_spin, self.record_dpi_spin):
+            spin.blockSignals(True)
+            spin.setValue(float(dpi))
+            spin.blockSignals(False)
+
+    def _effective_dpi(self) -> float:
+        dpi = self.dpi_spin.value()
+        if dpi > 0:
+            return float(dpi)
+        if self._loaded_image_default_dpi > 0:
+            return float(self._loaded_image_default_dpi)
+        return 72.0
+
+    def _auto_radiation_profile_positions(self) -> dict[str, float] | None:
+        if self.image is None:
+            return None
+        center = self.laser_center or self._default_laser_center()
+        if center is None:
+            return None
+        dpi = self._effective_dpi()
+        distance_px = self.radiation_profile_distance_mm * dpi / 25.4
+        height, width = self.image.shape[:2]
+        return {
+            "top": max(0.0, min(height - 1.0, center.y - distance_px)),
+            "bottom": max(0.0, min(height - 1.0, center.y + distance_px)),
+            "left": max(0.0, min(width - 1.0, center.x - distance_px)),
+            "right": max(0.0, min(width - 1.0, center.x + distance_px)),
+        }
+
+    def _manual_radiation_profile_positions_from_view(self) -> dict[str, float] | None:
+        lines = self.view.profile_lines()
+        required = ("top", "bottom", "left", "right")
+        if any(name not in lines for name in required):
+            return None
+        return {
+            "top": float(lines["top"][0].y),
+            "bottom": float(lines["bottom"][0].y),
+            "left": float(lines["left"][0].x),
+            "right": float(lines["right"][0].x),
+        }
+
+    def _apply_radiation_profile_positions(self, positions: dict[str, float] | None) -> None:
+        if positions is None:
+            return
+        self._applying_radiation_profile_lines = True
+        try:
+            self.view.set_profile_line_positions(
+                top_y=positions.get("top"),
+                bottom_y=positions.get("bottom"),
+                left_x=positions.get("left"),
+                right_x=positions.get("right"),
+            )
+        finally:
+            self._applying_radiation_profile_lines = False
+
+    def _refresh_radiation_profile_lines(self, force_manual_sync: bool = False) -> None:
+        if self.image is None:
+            return
+        auto_positions = self._auto_radiation_profile_positions()
+        if auto_positions is None:
+            return
+        if self.radiation_profile_mode == "auto":
+            if not self._manual_radiation_profile_dirty or force_manual_sync:
+                self.manual_radiation_profile_lines = dict(auto_positions)
+            self._apply_radiation_profile_positions(auto_positions)
+            return
+        if self.manual_radiation_profile_lines is None or force_manual_sync or not self._manual_radiation_profile_dirty:
+            self.manual_radiation_profile_lines = dict(auto_positions)
+            self._manual_radiation_profile_dirty = False
+        self._apply_radiation_profile_positions(self.manual_radiation_profile_lines)
+
+    def _set_radiation_profile_mode(self, mode: str, update_ui: bool = True) -> None:
+        if mode not in ("auto", "manual"):
+            return
+        self.radiation_profile_mode = mode
+        if hasattr(self, "radiation_profile_mode_stack"):
+            self.radiation_profile_mode_stack.setCurrentIndex(0 if mode == "auto" else 1)
+        self.view.set_profile_lines_editable(mode == "manual")
+        if update_ui:
+            self.radiation_profile_auto_radio.blockSignals(True)
+            self.radiation_profile_manual_radio.blockSignals(True)
+            self.radiation_profile_auto_radio.setChecked(mode == "auto")
+            self.radiation_profile_manual_radio.setChecked(mode == "manual")
+            self.radiation_profile_auto_radio.blockSignals(False)
+            self.radiation_profile_manual_radio.blockSignals(False)
+        if self.current_stage == "radiation":
+            self._refresh_radiation_profile_lines(force_manual_sync=mode == "manual" and not self._manual_radiation_profile_dirty)
+            self._sync_radiation_step_ui()
+
+    def _on_radiation_profile_distance_changed(self) -> None:
+        self.radiation_profile_distance_mm = self.radiation_profile_distance_spin.value()
+        if self.current_stage == "radiation" and self.radiation_profile_mode == "auto":
+            self._refresh_radiation_profile_lines()
+
     def _restore_settings(self) -> None:
         last_path = self.settings.value("last_image_path", "", str)
         if last_path:
@@ -681,6 +871,8 @@ class MainWindow(QMainWindow):
 
     def _on_dpi_changed(self) -> None:
         self._save_settings()
+        if self.current_stage == "radiation" and self.radiation_profile_mode == "auto":
+            self._refresh_radiation_profile_lines()
         self._update_result_label()
 
     def _on_record_dpi_changed(self) -> None:
@@ -698,26 +890,31 @@ class MainWindow(QMainWindow):
             self.view.select_profile_line(self.selected_profile_line)
             self.view.set_profile_orientation(None)
             self.view.set_profile_lines_visible(True)
+            self.view.set_profile_lines_editable(True)
         elif stage == "radiation":
-            self._set_default_profile_lines()
             self.view.set_active_field("radiation")
             if self.selected_profile_line is None:
                 self.view.select_profile_line("top")
             self.view.set_visible_profile_lines(None)
             self.view.set_profile_orientation(None)
             self.view.set_profile_lines_visible(True)
+            self._set_radiation_profile_mode(self.radiation_profile_mode, update_ui=True)
         elif stage == "light":
             self.view.select_profile_line(None)
             self.view.set_active_field("light")
             self.view.set_visible_profile_lines(None)
             self.view.set_profile_orientation(None)
             self.view.set_profile_lines_visible(False)
+            self.view.set_profile_lines_editable(False)
         else:
             self.view.select_profile_line(None)
             self.view.set_visible_profile_lines(None)
             self.view.set_profile_orientation(None)
             self.view.set_profile_lines_visible(False)
+            self.view.set_profile_lines_editable(False)
         self.view.set_editing_enabled(stage in ("laser", "radiation", "light"))
+        if stage == "laser":
+            self.view.set_profile_lines_editable(True)
         self._sync_stage_controls()
         if stage in ("laser", "radiation"):
             self._on_profile_lines_changed(self.view.profile_lines())
@@ -796,16 +993,7 @@ class MainWindow(QMainWindow):
         self._update_result_label()
 
     def _set_default_profile_lines(self) -> None:
-        shape = self.view.image_shape()
-        if shape is None:
-            return
-        height, width = shape
-        self.view.set_profile_line_positions(
-            top_y=height * 0.25,
-            bottom_y=height * 0.75,
-            left_x=width * 0.25,
-            right_x=width * 0.75,
-        )
+        self._refresh_radiation_profile_lines(force_manual_sync=self.radiation_profile_mode == "manual" and not self._manual_radiation_profile_dirty)
 
     def _default_laser_center(self) -> Point | None:
         shape = self.view.image_shape()
@@ -885,13 +1073,23 @@ class MainWindow(QMainWindow):
         self.manually_adjusted_radiation_cursors = set()
         self._profile_display_markers = {}
         self._auto_detection_failures = {}
+        self.manual_radiation_profile_lines = None
+        self._manual_radiation_profile_dirty = False
+        self.radiation_profile_mode = "auto"
         self.view.set_radiation_points(self.radiation_points)
         self.view.set_radiation_rect(None)
         self.view.set_light_rect(None)
+        self._set_radiation_profile_mode("auto", update_ui=True)
         if self.current_stage == "radiation":
             self._redetect_radiation_lines()
         self.status.showMessage("Reset radiation boundary detection.")
         self._update_result_label()
+
+    def reset_radiation_profile_lines(self) -> None:
+        self.manual_radiation_profile_lines = self._auto_radiation_profile_positions()
+        self._manual_radiation_profile_dirty = False
+        self._set_radiation_profile_mode("manual", update_ui=True)
+        self.status.showMessage("Reset radiation profile lines.")
 
     def reset_light_field(self) -> None:
         if self.current_stage != "light":
@@ -1022,6 +1220,9 @@ class MainWindow(QMainWindow):
             for plot in self.profile_plots.values():
                 plot.set_profile(None, None, ())
             return
+        if self.current_stage == "radiation" and self.radiation_profile_mode == "manual" and not self._applying_radiation_profile_lines:
+            self.manual_radiation_profile_lines = self._manual_radiation_profile_positions_from_view()
+            self._manual_radiation_profile_dirty = self.manual_radiation_profile_lines is not None
         active_lines = {"left", "bottom"} if self.current_stage == "laser" else set(lines)
         changed_lines = self._changed_profile_lines(lines)
         if self.current_stage == "radiation":

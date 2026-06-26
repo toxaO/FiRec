@@ -74,6 +74,7 @@ class ImageView(QGraphicsView):
         self.active_profile_orientation: str | None = None
         self.visible_profile_lines: set[str] | None = None
         self.profile_lines_visible = True
+        self.profile_lines_editable = True
         self.profile_line_offsets = {}
         self.selected_profile_line: str | None = None
         self.active_field = "radiation"
@@ -157,6 +158,9 @@ class ImageView(QGraphicsView):
     def set_profile_lines_visible(self, visible: bool) -> None:
         self.profile_lines_visible = visible
         self._draw_profile_lines()
+
+    def set_profile_lines_editable(self, editable: bool) -> None:
+        self.profile_lines_editable = editable
 
     def set_visible_profile_lines(self, names: set[str] | None) -> None:
         self.visible_profile_lines = names
@@ -486,7 +490,11 @@ class ImageView(QGraphicsView):
             return
 
         scene_pos = self.mapToScene(event.position().toPoint())
-        profile_line = self._hit_profile_line(scene_pos) if self.editing_enabled and self.active_field in ("laser", "radiation") else None
+        profile_line = (
+            self._hit_profile_line(scene_pos)
+            if self.editing_enabled and self.profile_lines_editable and self.active_field in ("laser", "radiation")
+            else None
+        )
         target = self._hit_active_target(scene_pos) if self.editing_enabled and self.active_field == "light" else None
         self._last_scene_pos = scene_pos
         self._last_view_pos = event.position()
@@ -561,8 +569,11 @@ class ImageView(QGraphicsView):
             if not self.editing_enabled:
                 event.accept()
                 return
-            if self.selected_profile_line is not None:
+            if self.selected_profile_line is not None and self.profile_lines_editable:
                 self._nudge_selected_profile_line(event)
+                event.accept()
+                return
+            if self.active_field == "radiation" and not self.profile_lines_editable:
                 event.accept()
                 return
             self._nudge_selected_target(event)
@@ -571,7 +582,7 @@ class ImageView(QGraphicsView):
         super().keyPressEvent(event)
 
     def _nudge_selected_profile_line(self, event: QKeyEvent) -> None:
-        if self.selected_profile_line is None:
+        if self.selected_profile_line is None or not self.profile_lines_editable:
             return
         step = 10.0 if event.modifiers() & Qt.ShiftModifier else 1.0
         dx = dy = 0.0
@@ -587,7 +598,7 @@ class ImageView(QGraphicsView):
 
     def _nudge_selected_target(self, event: QKeyEvent) -> None:
         active_rect = self._active_rect()
-        if active_rect is None:
+        if active_rect is None or (self.active_field == "radiation" and not self.profile_lines_editable):
             return
         step = 10.0 if event.modifiers() & Qt.ShiftModifier else 1.0
         dx = dy = 0.0

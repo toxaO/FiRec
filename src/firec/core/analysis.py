@@ -58,6 +58,27 @@ def load_image(path: str | Path) -> np.ndarray:
     return image
 
 
+def tiff_image_dpi(path: str | Path) -> float | None:
+    try:
+        with tifffile.TiffFile(path) as tif:
+            if not tif.pages:
+                return None
+            page = tif.pages[0]
+            x_tag = page.tags.get("XResolution")
+            y_tag = page.tags.get("YResolution")
+            x_resolution = _tag_rational_to_float(x_tag.value) if x_tag is not None else None
+            y_resolution = _tag_rational_to_float(y_tag.value) if y_tag is not None else None
+            values = [value for value in (x_resolution, y_resolution) if value is not None and value > 0]
+            if not values:
+                return None
+            unit_tag = page.tags.get("ResolutionUnit")
+            unit_value = int(unit_tag.value) if unit_tag is not None else 2
+            dpi_values = [_resolution_to_dpi(value, unit_value) for value in values]
+            return float(sum(dpi_values) / len(dpi_values))
+    except Exception:
+        return None
+
+
 def otsu_threshold(image: np.ndarray) -> float:
     normalized = normalize_for_display(image)
     threshold, _ = cv2.threshold(normalized, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
@@ -228,6 +249,25 @@ def display_threshold_to_image_value(image: np.ndarray, display_threshold: float
     min_value = float(np.min(gray))
     max_value = float(np.max(gray))
     return min_value + (float(display_threshold) / 255.0) * (max_value - min_value)
+
+
+def _resolution_to_dpi(value: float, unit_value: int) -> float:
+    if unit_value == 3:
+        return float(value) * 2.54
+    return float(value)
+
+
+def _tag_rational_to_float(value: object) -> float | None:
+    if isinstance(value, tuple) and len(value) == 2:
+        numerator, denominator = value
+        denominator = float(denominator)
+        if denominator == 0:
+            return None
+        return float(numerator) / denominator
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def ensure_grayscale(image: np.ndarray) -> np.ndarray:
