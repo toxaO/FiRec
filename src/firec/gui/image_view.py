@@ -42,6 +42,8 @@ class ImageView(QGraphicsView):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setBackgroundBrush(QColor(214, 214, 214))
+        self.setStyleSheet("QGraphicsView { border: 1px solid #8c8c8c; }")
 
         self._pixmap_item: QGraphicsPixmapItem | None = None
         self._radiation_item: QGraphicsPolygonItem | None = None
