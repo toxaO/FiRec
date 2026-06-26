@@ -104,14 +104,15 @@ def test_detect_profile_boundaries_finds_first_crossings_from_center():
         values,
         film_pixel_value=100,
         threshold_percent=50,
-        center_percent=10,
+        center_range_mm=1.0,
+        dpi=25.4,
         smoothing_window=1,
     )
 
     assert detection.radiation_pixel_value == 10
     assert detection.threshold_pixel_value == 55
     assert detection.center_start_position == 4
-    assert detection.center_end_position == 5
+    assert detection.center_end_position == 6
     assert detection.left_position == 2.9
     assert detection.right_position == 7.1
 

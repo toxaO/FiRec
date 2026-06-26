@@ -183,18 +183,24 @@ def detect_profile_boundaries(
     values: np.ndarray,
     film_pixel_value: float,
     threshold_percent: float = 50.0,
-    center_percent: float = 20.0,
+    center_range_mm: float = 20.0,
+    dpi: float = 72.0,
     smoothing_window: int = 5,
 ) -> ProfileBoundaryDetection:
     if positions.size != values.size or values.size < 3:
         raise ValueError("Profile must contain at least three samples.")
 
     smoothed = moving_average_profile(values, smoothing_window)
-    center_fraction = max(0.01, min(1.0, float(center_percent) * 2.0 / 100.0))
-    center_size = max(1, int(round(values.size * center_fraction)))
-    center_start = max(0, (values.size - center_size) // 2)
-    center_end = min(values.size, center_start + center_size)
-    radiation_pixel_value = float(np.mean(smoothed[center_start:center_end]))
+    center_position = (float(np.min(positions)) + float(np.max(positions))) / 2.0
+    range_px = max(0.0, float(center_range_mm)) * float(dpi) / 25.4
+    center_mask = np.abs(positions - center_position) <= range_px
+    if np.any(center_mask):
+        center_indices = np.flatnonzero(center_mask)
+    else:
+        center_indices = np.array([int(np.argmin(np.abs(positions - center_position)))], dtype=np.int64)
+    center_start = int(center_indices[0])
+    center_end = int(center_indices[-1] + 1)
+    radiation_pixel_value = float(np.mean(smoothed[center_indices]))
 
     denominator = float(film_pixel_value) - radiation_pixel_value
     if np.isclose(denominator, 0.0):

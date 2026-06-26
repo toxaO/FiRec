@@ -392,7 +392,7 @@ class MainWindow(QMainWindow):
         self.radiation_center_spin.setRange(1.0, 100.0)
         self.radiation_center_spin.setDecimals(1)
         self.radiation_center_spin.setSingleStep(1.0)
-        self.radiation_center_spin.setSuffix(" %")
+        self.radiation_center_spin.setSuffix(" mm")
         self.radiation_center_spin.setValue(20.0)
         self.radiation_center_spin.valueChanged.connect(lambda value: self._redetect_radiation_lines())
 
@@ -447,7 +447,7 @@ class MainWindow(QMainWindow):
         settings_layout.addWidget(self.film_pixel_spin, 0, 1)
         settings_layout.addWidget(QLabel("Boundary"), 1, 0)
         settings_layout.addWidget(self.radiation_threshold_spin, 1, 1)
-        settings_layout.addWidget(QLabel("Center +/-"), 2, 0)
+        settings_layout.addWidget(QLabel("Range"), 2, 0)
         settings_layout.addWidget(self.radiation_center_spin, 2, 1)
         settings_layout.addWidget(QLabel("Smooth px"), 3, 0)
         settings_layout.addWidget(self.smoothing_window_spin, 3, 1)
@@ -1318,6 +1318,7 @@ class MainWindow(QMainWindow):
                     self.film_pixel_spin.value(),
                     self.radiation_threshold_spin.value(),
                     self.radiation_center_spin.value(),
+                    self._effective_dpi(),
                     self.smoothing_window_spin.value(),
                 )
             except ValueError as error:
