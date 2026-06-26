@@ -295,7 +295,7 @@ class MainWindow(QMainWindow):
         widget.setLayout(layout)
         return widget
 
-    def _load_bar(self) -> QHBoxLayout:
+    def _load_bar(self) -> QVBoxLayout:
         browse_button = _button("Browse")
         browse_button.clicked.connect(self.browse_image_path)
 
@@ -312,12 +312,20 @@ class MainWindow(QMainWindow):
         self.path_edit.setMinimumWidth(320)
         self.image_info_label.setMinimumWidth(180)
 
-        layout = QHBoxLayout()
-        layout.addWidget(self.path_edit, 1)
-        layout.addWidget(self.image_info_label)
-        layout.addWidget(browse_button)
-        layout.addWidget(QLabel("DPI"))
-        layout.addWidget(self.dpi_spin)
+        top_row = QHBoxLayout()
+        top_row.addWidget(self.path_edit, 1)
+        top_row.addWidget(browse_button)
+
+        bottom_row = QHBoxLayout()
+        bottom_row.addWidget(self.image_info_label, 1)
+        bottom_row.addWidget(QLabel("DPI"))
+        bottom_row.addWidget(self.dpi_spin)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(3)
+        layout.addLayout(top_row)
+        layout.addLayout(bottom_row)
         return layout
 
     def _zoom_buttons(self) -> QHBoxLayout:
