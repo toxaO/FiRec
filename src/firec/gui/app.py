@@ -1330,8 +1330,12 @@ class MainWindow(QMainWindow):
         self.view.set_result_center_points(points)
 
     def _on_visible_scene_rect_changed(self, scene_rect) -> None:
-        for plot in self.profile_plots.values():
-            plot.set_visible_range(None)
+        horizontal_range = (float(scene_rect.left()), float(scene_rect.right()))
+        vertical_range = (float(scene_rect.top()), float(scene_rect.bottom()))
+        self.top_profile_plot.set_visible_range(horizontal_range)
+        self.bottom_profile_plot.set_visible_range(horizontal_range)
+        self.left_profile_plot.set_visible_range(vertical_range)
+        self.right_profile_plot.set_visible_range(vertical_range)
 
     def _update_result_label(self) -> None:
         if self.current_stage != "result":

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 import numpy as np
-from PySide6.QtCore import QPointF, QSize, Qt
+from PySide6.QtCore import QPointF, QSize
 from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QWidget
 
@@ -97,7 +97,7 @@ class ProfilePlot(QWidget):
         if values is None or positions is None or values.size < 2 or positions.size != values.size:
             return
 
-        visible_min, visible_max = self._plot_range(positions)
+        visible_min, visible_max = self._plot_range()
         visible_mask = (positions >= visible_min) & (positions <= visible_max)
         if np.count_nonzero(visible_mask) < 2:
             return
@@ -173,15 +173,26 @@ class ProfilePlot(QWidget):
 
         self._draw_border(painter)
 
-    def _plot_range(self, positions: np.ndarray) -> tuple[float, float]:
+    def _plot_range(self) -> tuple[float, float]:
         if self.visible_range is None:
-            return float(np.min(positions)), float(np.max(positions))
+            return self._data_range()
         start, end = self.visible_range
-        minimum = max(float(np.min(positions)), min(start, end))
-        maximum = min(float(np.max(positions)), max(start, end))
-        if maximum <= minimum:
-            return float(np.min(positions)), float(np.max(positions))
-        return minimum, maximum
+        if end < start:
+            start, end = end, start
+        if np.isclose(start, end):
+            return self._data_range()
+        return float(start), float(end)
+
+    def _data_range(self) -> tuple[float, float]:
+        positions = self.positions
+        if positions is None or positions.size == 0:
+            if self.visible_range is not None:
+                start, end = self.visible_range
+                if end < start:
+                    start, end = end, start
+                return float(start), float(end)
+            return 0.0, 1.0
+        return float(np.min(positions)), float(np.max(positions))
 
     def _profile_points(
         self,
@@ -233,7 +244,7 @@ class ProfilePlot(QWidget):
     def _hit_cursor(self, position: QPointF) -> str | None:
         if not self.cursors:
             return None
-        visible_min, visible_max = self._current_visible_range()
+        visible_min, visible_max = self._data_range()
         span = visible_max - visible_min
         if span <= 0:
             return None
@@ -251,7 +262,7 @@ class ProfilePlot(QWidget):
         return best_name
 
     def _move_cursor(self, name: str, position: QPointF) -> None:
-        visible_min, visible_max = self._current_visible_range()
+        visible_min, visible_max = self._data_range()
         length = max(1, self.height() - 1 if self.orientation == "vertical" else self.width() - 1)
         coordinate = position.y() if self.orientation == "vertical" else position.x()
         ratio = max(0.0, min(1.0, coordinate / length))
@@ -260,13 +271,6 @@ class ProfilePlot(QWidget):
         if self.on_cursor_moved is not None:
             self.on_cursor_moved(name, value)
         self.update()
-
-    def _current_visible_range(self) -> tuple[float, float]:
-        if self.positions is None or self.positions.size == 0:
-            if self.visible_range is not None:
-                return min(self.visible_range), max(self.visible_range)
-            return 0.0, 1.0
-        return self._plot_range(self.positions)
 
     def _draw_border(self, painter: QPainter) -> None:
         color = QColor(0, 210, 255) if self.selected else QColor(80, 80, 80)
