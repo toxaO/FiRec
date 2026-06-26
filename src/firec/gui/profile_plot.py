@@ -15,9 +15,13 @@ class ProfilePlot(QWidget):
             raise ValueError(f"Unknown orientation: {orientation}")
         self.orientation = orientation
         self.values: np.ndarray | None = None
+        self.smoothed_values: np.ndarray | None = None
         self.positions: np.ndarray | None = None
         self.edge_positions: tuple[float, ...] = ()
+        self.reference_value: float | None = None
         self.visible_range: tuple[float, float] | None = None
+        self.raw_profile_visible = True
+        self.smoothed_profile_visible = True
         self.cursors: dict[str, float] = {}
         self.active_cursor: str | None = None
         self.selected = False
@@ -39,6 +43,8 @@ class ProfilePlot(QWidget):
         if values is None:
             self.positions = None
             self.edge_positions = ()
+            self.smoothed_values = None
+            self.reference_value = None
         else:
             self.positions = np.linspace(0.0, float(values.size - 1), values.size)
         self.update()
@@ -48,10 +54,22 @@ class ProfilePlot(QWidget):
         values: np.ndarray | None,
         positions: np.ndarray | None,
         edge_positions: tuple[float, ...],
+        smoothed_values: np.ndarray | None = None,
+        reference_value: float | None = None,
     ) -> None:
         self.values = values
         self.positions = positions
         self.edge_positions = edge_positions
+        self.smoothed_values = smoothed_values
+        self.reference_value = reference_value
+        self.update()
+
+    def set_raw_profile_visible(self, visible: bool) -> None:
+        self.raw_profile_visible = visible
+        self.update()
+
+    def set_smoothed_profile_visible(self, visible: bool) -> None:
+        self.smoothed_profile_visible = visible
         self.update()
 
     def set_visible_range(self, visible_range: tuple[float, float] | None) -> None:
@@ -95,21 +113,31 @@ class ProfilePlot(QWidget):
 
         width = max(1, self.width() - 1)
         height = max(1, self.height() - 1)
-        points = QPolygonF()
-        for position_value, value in zip(positions, normalized):
-            if position_value < visible_min or position_value > visible_max:
-                continue
-            position = (position_value - visible_min) / (visible_max - visible_min)
-            if self.orientation == "vertical":
-                x = value * width
-                y = position * height
-            else:
-                x = position * width
-                y = height - value * height
-            points.append(QPointF(x, y))
 
-        painter.setPen(QPen(QColor(0, 220, 255), 1))
-        painter.drawPolyline(points)
+        reference_value = self.reference_value
+        if reference_value is not None:
+            reference_ratio = 0.5 if span <= 0 else (float(reference_value) - minimum) / span
+            reference_ratio = max(0.0, min(1.0, reference_ratio))
+            painter.setPen(QPen(QColor(255, 170, 0), 1))
+            if self.orientation == "vertical":
+                x = round(reference_ratio * width)
+                painter.drawLine(x, 0, x, height)
+            else:
+                y = round(height - reference_ratio * height)
+                painter.drawLine(0, y, width, y)
+
+        if self.raw_profile_visible:
+            painter.setPen(QPen(QColor(0, 220, 255), 1))
+            painter.drawPolyline(self._profile_points(positions, normalized, visible_min, visible_max, width, height))
+
+        smoothed_values = self.smoothed_values
+        if self.smoothed_profile_visible and smoothed_values is not None and smoothed_values.size == values.size:
+            if span <= 0:
+                smoothed_normalized = np.full(smoothed_values.shape, 0.5, dtype=np.float64)
+            else:
+                smoothed_normalized = (smoothed_values.astype(np.float64) - minimum) / span
+            painter.setPen(QPen(QColor(255, 230, 120), 1))
+            painter.drawPolyline(self._profile_points(positions, smoothed_normalized, visible_min, visible_max, width, height))
         painter.setPen(QPen(QColor(80, 80, 80), 1))
         if self.orientation == "vertical":
             painter.drawLine(0, 0, 0, height)
@@ -118,7 +146,7 @@ class ProfilePlot(QWidget):
             painter.drawLine(0, 0, width, 0)
             painter.drawLine(0, height, width, height)
 
-        painter.setPen(QPen(QColor(255, 210, 0), 1))
+        painter.setPen(QPen(QColor(120, 220, 120), 1))
         for edge_position in self.edge_positions:
             if edge_position < visible_min or edge_position > visible_max:
                 continue
@@ -154,6 +182,30 @@ class ProfilePlot(QWidget):
         if maximum <= minimum:
             return float(np.min(positions)), float(np.max(positions))
         return minimum, maximum
+
+    def _profile_points(
+        self,
+        positions: np.ndarray,
+        normalized_values: np.ndarray,
+        visible_min: float,
+        visible_max: float,
+        width: int,
+        height: int,
+    ) -> QPolygonF:
+        points = QPolygonF()
+        for position_value, value in zip(positions, normalized_values, strict=True):
+            if position_value < visible_min or position_value > visible_max:
+                continue
+            position = (position_value - visible_min) / (visible_max - visible_min)
+            value = max(0.0, min(1.0, float(value)))
+            if self.orientation == "vertical":
+                x = value * width
+                y = position * height
+            else:
+                x = position * width
+                y = height - value * height
+            points.append(QPointF(x, y))
+        return points
 
     def mousePressEvent(self, event) -> None:
         if self.on_selected is not None:

@@ -4,11 +4,14 @@ import numpy as np
 import cv2
 
 from firec.core.analysis import (
+    circular_region_mean,
     compare_field_polygons,
     detect_radiation_field,
+    detect_profile_boundaries,
     invert_profile,
     line_profile,
     load_image,
+    moving_average_profile,
     rotate_image_around_rect,
     rotate_image_to_align_rect,
 )
@@ -74,6 +77,41 @@ def test_invert_profile_flips_values_against_maximum():
     profile = invert_profile(np.array([2, 5, 3], dtype=np.float64))
 
     assert profile.tolist() == [3, 0, 2]
+
+
+def test_moving_average_profile_preserves_length_with_edge_padding():
+    profile = moving_average_profile(np.array([10, 20, 40], dtype=np.float64), 3)
+
+    np.testing.assert_allclose(profile, [40 / 3, 70 / 3, 100 / 3])
+
+
+def test_detect_profile_boundaries_finds_first_crossings_from_center():
+    positions = np.arange(11, dtype=np.float64)
+    values = np.array([100, 100, 100, 50, 10, 10, 10, 50, 100, 100, 100], dtype=np.float64)
+
+    detection = detect_profile_boundaries(
+        positions,
+        values,
+        film_pixel_value=100,
+        threshold_percent=50,
+        center_percent=10,
+        smoothing_window=1,
+    )
+
+    assert detection.radiation_pixel_value == 10
+    assert detection.threshold_pixel_value == 55
+    assert detection.center_start_position == 4
+    assert detection.center_end_position == 5
+    assert detection.left_position == 2.9
+    assert detection.right_position == 7.1
+
+
+def test_circular_region_mean_uses_raw_pixels_inside_radius():
+    image = np.arange(25, dtype=np.uint8).reshape(5, 5)
+
+    mean = circular_region_mean(image, Point(2, 2), 1.0)
+
+    assert mean == 12.0
 
 
 def test_rotate_image_to_align_rect_sets_rect_angle_to_zero():

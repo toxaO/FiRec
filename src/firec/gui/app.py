@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QStatusBar,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -34,10 +35,13 @@ from PySide6.QtWidgets import (
 from firec.core.analysis import (
     AnalysisResult,
     FieldGeometry,
+    circular_region_mean,
     compare_field_polygons,
+    detect_profile_boundaries,
     invert_profile,
     line_profile,
     load_image,
+    moving_average_profile,
 )
 from firec.core.geometry import Point, RotatedRect
 from firec.gui.image_view import ImageView
@@ -67,6 +71,11 @@ class MainWindow(QMainWindow):
         self.laser_center: Point | None = None
         self.radiation_points: dict[str, Point] = {}
         self.profile_cursors: dict[str, float] = {}
+        self.manually_adjusted_radiation_cursors: set[str] = set()
+        self._auto_updating_profile_cursor = False
+        self._last_profile_lines: dict[str, tuple[Point, Point]] = {}
+        self._profile_display_markers: dict[str, tuple[np.ndarray | None, float | None, tuple[float, float] | None]] = {}
+        self._auto_detection_failures: dict[str, str] = {}
         self.selected_profile_line: str | None = "bottom"
         self.settings = QSettings("FiRec", "FiRec")
         self.connection = connect_database("firec.sqlite")
@@ -81,10 +90,21 @@ class MainWindow(QMainWindow):
         self.main_tabs = QTabWidget()
         self.main_tabs.currentChanged.connect(self._on_main_tab_changed)
         self.path_edit = QLineEdit()
+        self.image_info_label = QLabel("No image")
         self.dpi_spin = QDoubleSpinBox()
         self.origin_combo = QComboBox()
         self.record_origin_combo = QComboBox()
         self.record_dpi_spin = QDoubleSpinBox()
+        self.film_pixel_spin = QDoubleSpinBox()
+        self.radiation_threshold_spin = QDoubleSpinBox()
+        self.radiation_center_spin = QDoubleSpinBox()
+        self.smoothing_window_spin = QSpinBox()
+        self.raw_profile_check = QCheckBox("Raw profile")
+        self.smoothed_profile_check = QCheckBox("Smoothed profile")
+        self.circle_x_spin = QDoubleSpinBox()
+        self.circle_y_spin = QDoubleSpinBox()
+        self.circle_radius_spin = QDoubleSpinBox()
+        self.circle_mean_label = QLabel("Mean: -")
         self.top_profile_plot = ProfilePlot("horizontal")
         self.bottom_profile_plot = ProfilePlot("horizontal")
         self.left_profile_plot = ProfilePlot("vertical")
@@ -114,6 +134,7 @@ class MainWindow(QMainWindow):
         self._build_layout()
         self._restore_settings()
         self.view.set_editing_enabled(False)
+        self._update_profile_visibility()
         self._sync_stage_controls()
         self.refresh_results_table()
 
@@ -287,9 +308,11 @@ class MainWindow(QMainWindow):
         self.path_edit.returnPressed.connect(self.load_from_path_edit)
         self.path_edit.setPlaceholderText("TIFF image path")
         self.path_edit.setMinimumWidth(320)
+        self.image_info_label.setMinimumWidth(180)
 
         layout = QHBoxLayout()
         layout.addWidget(self.path_edit, 1)
+        layout.addWidget(self.image_info_label)
         layout.addWidget(browse_button)
         layout.addWidget(QLabel("DPI"))
         layout.addWidget(self.dpi_spin)
@@ -330,14 +353,98 @@ class MainWindow(QMainWindow):
 
     def _radiation_frame(self) -> tuple[QGroupBox, list[QWidget]]:
         self.radiation_status_label = QLabel("Set radiation boundary points")
+        reset_button = _button("Reset")
+        reset_button.clicked.connect(self.reset_radiation_field)
+
+        self.film_pixel_spin.setRange(-1_000_000_000.0, 1_000_000_000.0)
+        self.film_pixel_spin.setDecimals(1)
+        self.film_pixel_spin.setSingleStep(100.0)
+        self.film_pixel_spin.setToolTip("Raw pixel value for unirradiated film.")
+        self.film_pixel_spin.valueChanged.connect(lambda value: self._redetect_radiation_lines())
+
+        self.radiation_threshold_spin.setRange(0.0, 100.0)
+        self.radiation_threshold_spin.setDecimals(1)
+        self.radiation_threshold_spin.setSingleStep(1.0)
+        self.radiation_threshold_spin.setSuffix(" %")
+        self.radiation_threshold_spin.setValue(50.0)
+        self.radiation_threshold_spin.valueChanged.connect(lambda value: self._redetect_radiation_lines())
+
+        self.radiation_center_spin.setRange(1.0, 100.0)
+        self.radiation_center_spin.setDecimals(1)
+        self.radiation_center_spin.setSingleStep(1.0)
+        self.radiation_center_spin.setSuffix(" %")
+        self.radiation_center_spin.setValue(20.0)
+        self.radiation_center_spin.valueChanged.connect(lambda value: self._redetect_radiation_lines())
+
+        self.smoothing_window_spin.setRange(1, 501)
+        self.smoothing_window_spin.setSingleStep(2)
+        self.smoothing_window_spin.setValue(5)
+        self.smoothing_window_spin.valueChanged.connect(lambda value: self._redetect_radiation_lines())
+
+        self.raw_profile_check.setChecked(True)
+        self.smoothed_profile_check.setChecked(True)
+        self.raw_profile_check.toggled.connect(lambda visible: self._update_profile_visibility())
+        self.smoothed_profile_check.toggled.connect(lambda visible: self._update_profile_visibility())
+
+        for spin in (self.circle_x_spin, self.circle_y_spin, self.circle_radius_spin):
+            spin.setRange(0.0, 1_000_000.0)
+            spin.setDecimals(1)
+            spin.setSingleStep(1.0)
+        self.circle_x_spin.valueChanged.connect(lambda value: self._update_circle_overlay())
+        self.circle_y_spin.valueChanged.connect(lambda value: self._update_circle_overlay())
+        self.circle_radius_spin.valueChanged.connect(lambda value: self._update_circle_overlay())
+        self.circle_radius_spin.setValue(10.0)
+        circle_button = _button("Circle Mean")
+        circle_button.clicked.connect(self.calculate_circle_mean)
+
+        settings_layout = QGridLayout()
+        settings_layout.addWidget(QLabel("Film baseline px"), 0, 0)
+        settings_layout.addWidget(self.film_pixel_spin, 0, 1)
+        settings_layout.addWidget(QLabel("Boundary"), 1, 0)
+        settings_layout.addWidget(self.radiation_threshold_spin, 1, 1)
+        settings_layout.addWidget(QLabel("Center +/-"), 2, 0)
+        settings_layout.addWidget(self.radiation_center_spin, 2, 1)
+        settings_layout.addWidget(QLabel("Smooth px"), 3, 0)
+        settings_layout.addWidget(self.smoothing_window_spin, 3, 1)
+
+        profile_layout = QHBoxLayout()
+        profile_layout.addWidget(self.raw_profile_check)
+        profile_layout.addWidget(self.smoothed_profile_check)
+        profile_layout.addStretch(1)
+
+        circle_layout = QGridLayout()
+        circle_layout.addWidget(QLabel("X"), 0, 0)
+        circle_layout.addWidget(self.circle_x_spin, 0, 1)
+        circle_layout.addWidget(QLabel("Y"), 1, 0)
+        circle_layout.addWidget(self.circle_y_spin, 1, 1)
+        circle_layout.addWidget(QLabel("R"), 2, 0)
+        circle_layout.addWidget(self.circle_radius_spin, 2, 1)
+        circle_layout.addWidget(circle_button, 3, 0)
+        circle_layout.addWidget(self.circle_mean_label, 3, 1)
 
         layout = QVBoxLayout()
         layout.addWidget(self.radiation_status_label)
+        layout.addLayout(settings_layout)
+        layout.addLayout(profile_layout)
+        layout.addLayout(circle_layout)
+        layout.addWidget(reset_button)
 
         frame = _frame("Radiation")
         frame.setLayout(layout)
         frame.mousePressEvent = lambda event: self.go_to_stage("radiation")
-        return frame, []
+        return frame, [
+            self.film_pixel_spin,
+            self.radiation_threshold_spin,
+            self.radiation_center_spin,
+            self.smoothing_window_spin,
+            self.circle_x_spin,
+            self.circle_y_spin,
+            self.circle_radius_spin,
+            self.raw_profile_check,
+            self.smoothed_profile_check,
+            circle_button,
+            reset_button,
+        ]
 
     def _light_frame(self) -> tuple[QGroupBox, list[QWidget]]:
         reset_button = _button("Reset")
@@ -442,8 +549,15 @@ class MainWindow(QMainWindow):
             self.laser_center = None
             self.radiation_points = {}
             self.profile_cursors = {}
+            self.manually_adjusted_radiation_cursors = set()
+            self._last_profile_lines = {}
+            self._profile_display_markers = {}
+            self._auto_detection_failures = {}
             self.selected_profile_line = "bottom"
             self.view.set_image(self.image)
+            self._update_image_info()
+            self._set_default_radiation_settings()
+            self._update_circle_overlay()
             self.laser_center = self._default_laser_center()
             self._set_laser_profile_lines()
             self._set_laser_profile_cursors()
@@ -458,6 +572,30 @@ class MainWindow(QMainWindow):
             self._update_result_label()
         except Exception as error:
             QMessageBox.critical(self, "Load failed", str(error))
+
+    def _update_image_info(self) -> None:
+        if self.image is None:
+            self.image_info_label.setText("No image")
+            return
+        minimum = float(np.min(self.image))
+        maximum = float(np.max(self.image))
+        self.image_info_label.setText(f"{self.image.dtype} min {minimum:.1f} max {maximum:.1f}")
+
+    def _set_default_radiation_settings(self) -> None:
+        if self.image is None:
+            return
+        height, width = self.image.shape[:2]
+        minimum = float(np.min(self.image))
+        maximum = float(np.max(self.image))
+        self.circle_x_spin.setMaximum(float(width - 1))
+        self.circle_y_spin.setMaximum(float(height - 1))
+        self.circle_x_spin.setValue((width - 1.0) / 2.0)
+        self.circle_y_spin.setValue((height - 1.0) / 2.0)
+        self.film_pixel_spin.blockSignals(True)
+        self.film_pixel_spin.setRange(minimum - abs(maximum - minimum) * 2.0 - 1.0, maximum + abs(maximum - minimum) * 2.0 + 1.0)
+        self.film_pixel_spin.setValue(maximum)
+        self.film_pixel_spin.blockSignals(False)
+        self.circle_mean_label.setText("Mean: -")
 
     def _restore_settings(self) -> None:
         last_path = self.settings.value("last_image_path", "", str)
@@ -671,10 +809,18 @@ class MainWindow(QMainWindow):
         self.radiation_rect = None
         self.radiation_polygon = None
         self.light_rect = None
+        for point_names in PROFILE_POINT_NAMES.values():
+            for point_name in point_names:
+                self.profile_cursors.pop(point_name, None)
+        self.manually_adjusted_radiation_cursors = set()
+        self._profile_display_markers = {}
+        self._auto_detection_failures = {}
         self.view.set_radiation_points(self.radiation_points)
         self.view.set_radiation_rect(None)
         self.view.set_light_rect(None)
-        self.status.showMessage("Cleared radiation points.")
+        if self.current_stage == "radiation":
+            self._redetect_radiation_lines()
+        self.status.showMessage("Reset radiation boundary detection.")
         self._update_result_label()
 
     def reset_light_field(self) -> None:
@@ -807,30 +953,37 @@ class MainWindow(QMainWindow):
                 plot.set_profile(None, None, ())
             return
         active_lines = {"left", "bottom"} if self.current_stage == "laser" else set(lines)
+        changed_lines = self._changed_profile_lines(lines)
+        if self.current_stage == "radiation":
+            self._auto_update_radiation_cursors(lines, changed_lines)
         for name, plot in self.profile_plots.items():
             if name not in active_lines:
                 plot.set_profile(None, None, ())
         for name, line in lines.items():
             if name not in active_lines:
                 continue
-            values = invert_profile(line_profile(self.image, line[0], line[1]))
+            raw_values = line_profile(self.image, line[0], line[1])
+            values = invert_profile(raw_values)
             if name in ("top", "bottom"):
                 positions = np.linspace(line[0].x, line[1].x, values.size)
-                axis = "x"
             else:
                 positions = np.linspace(line[0].y, line[1].y, values.size)
-                axis = "y"
             positions, values = _sort_profile(positions, values)
+            smoothed_values, reference_value, window_positions = self._profile_display_markers.get(name, (None, None, None))
             self.profile_plots[name].set_profile(
                 values,
                 positions,
-                (),
+                window_positions or (),
+                smoothed_values,
+                reference_value,
             )
         self._sync_laser_step_ui()
         self._sync_radiation_step_ui()
 
     def _on_profile_cursor_moved(self, name: str, value: float) -> None:
         self.profile_cursors[name] = value
+        if not self._auto_updating_profile_cursor and name not in ("laser_x", "laser_y"):
+            self.manually_adjusted_radiation_cursors.add(name)
         if name in ("laser_x", "laser_y"):
             self._update_laser_center_from_cursors()
             self._sync_laser_step_ui()
@@ -850,6 +1003,121 @@ class MainWindow(QMainWindow):
             return
         self.view.select_profile_line(line_name)
         self.view.setFocus()
+
+    def _update_profile_visibility(self) -> None:
+        raw_visible = self.raw_profile_check.isChecked()
+        smoothed_visible = self.smoothed_profile_check.isChecked()
+        for plot in self.profile_plots.values():
+            plot.set_raw_profile_visible(raw_visible)
+            plot.set_smoothed_profile_visible(smoothed_visible)
+
+    def _changed_profile_lines(self, lines: dict[str, tuple[Point, Point]]) -> set[str]:
+        if not self._last_profile_lines:
+            changed = set(lines)
+        else:
+            changed = {name for name, line in lines.items() if not _same_line(line, self._last_profile_lines.get(name))}
+        self._last_profile_lines = dict(lines)
+        return changed
+
+    def _auto_update_radiation_cursors(
+        self,
+        lines: dict[str, tuple[Point, Point]],
+        line_names: set[str],
+    ) -> None:
+        if self.image is None:
+            return
+        for line_name in line_names:
+            point_names = PROFILE_POINT_NAMES.get(line_name)
+            line = lines.get(line_name)
+            if point_names is None or line is None:
+                continue
+            if all(name in self.manually_adjusted_radiation_cursors for name in point_names):
+                continue
+            raw_values = None
+            try:
+                raw_values = line_profile(self.image, line[0], line[1])
+                if line_name in ("top", "bottom"):
+                    positions = np.linspace(line[0].x, line[1].x, raw_values.size)
+                else:
+                    positions = np.linspace(line[0].y, line[1].y, raw_values.size)
+                positions, raw_values = _sort_profile(positions, raw_values)
+                detection = detect_profile_boundaries(
+                    positions,
+                    raw_values,
+                    self.film_pixel_spin.value(),
+                    self.radiation_threshold_spin.value(),
+                    self.radiation_center_spin.value(),
+                    self.smoothing_window_spin.value(),
+                )
+            except ValueError as error:
+                self._auto_detection_failures[line_name] = str(error)
+                self._profile_display_markers[line_name] = self._profile_markers_without_detection(raw_values)
+                for point_name in point_names:
+                    if point_name not in self.manually_adjusted_radiation_cursors:
+                        self.profile_cursors.pop(point_name, None)
+                        self.radiation_points.pop(point_name, None)
+                continue
+
+            max_raw = float(np.max(raw_values)) if raw_values.size else 0.0
+            self._profile_display_markers[line_name] = (
+                max_raw - detection.smoothed_values,
+                max_raw - detection.threshold_pixel_value,
+                (float(detection.center_start_position), float(detection.center_end_position)),
+            )
+            self._auto_detection_failures.pop(line_name, None)
+            self._auto_updating_profile_cursor = True
+            try:
+                for point_name, position in zip(point_names, (detection.left_position, detection.right_position), strict=True):
+                    if point_name not in self.manually_adjusted_radiation_cursors:
+                        self.profile_cursors[point_name] = position
+            finally:
+                self._auto_updating_profile_cursor = False
+        self._update_radiation_auto_status()
+
+    def _profile_markers_without_detection(self, raw_values: np.ndarray | None) -> tuple[np.ndarray | None, float | None, tuple[float, float] | None]:
+        if raw_values is None:
+            return None, None, None
+        smoothed = moving_average_profile(raw_values, self.smoothing_window_spin.value())
+        max_raw = float(np.max(raw_values)) if raw_values.size else 0.0
+        return max_raw - smoothed, None, None
+
+    def _update_circle_overlay(self) -> None:
+        if self.image is None:
+            self.view.set_circle_overlay(None, None)
+            return
+        self.view.set_circle_overlay(
+            Point(self.circle_x_spin.value(), self.circle_y_spin.value()),
+            self.circle_radius_spin.value(),
+        )
+
+    def _redetect_radiation_lines(self) -> None:
+        if self.current_stage != "radiation" or self.image is None:
+            return
+        self._auto_update_radiation_cursors(self.view.profile_lines(), set(self.view.profile_lines()))
+        self._on_profile_lines_changed(self.view.profile_lines())
+
+    def _update_radiation_auto_status(self) -> None:
+        if self._auto_detection_failures:
+            names = ", ".join(sorted(self._auto_detection_failures))
+            self.status.showMessage(f"Radiation boundary auto detection failed: {names}")
+            return
+        if self.current_stage == "radiation":
+            self.status.showMessage("Radiation boundary points updated.")
+
+    def calculate_circle_mean(self) -> None:
+        if self.image is None:
+            QMessageBox.warning(self, "No image", "Load an image before calculating a circle mean.")
+            return
+        try:
+            value = circular_region_mean(
+                self.image,
+                Point(self.circle_x_spin.value(), self.circle_y_spin.value()),
+                self.circle_radius_spin.value(),
+            )
+        except ValueError as error:
+            QMessageBox.warning(self, "Circle mean failed", str(error))
+            return
+        self.circle_mean_label.setText(f"Mean: {value:.1f}")
 
     def _capture_radiation_points(self) -> None:
         lines = self.view.profile_lines()
@@ -911,7 +1179,13 @@ class MainWindow(QMainWindow):
     def _sync_radiation_step_ui(self) -> None:
         if not hasattr(self, "radiation_status_label"):
             return
-        self.radiation_status_label.setText(f"Set radiation boundary points")
+        self._update_profile_visibility()
+        if self._auto_detection_failures:
+            names = ", ".join(sorted(self._auto_detection_failures))
+            self.radiation_status_label.setText(f"Auto detection failed: {names}")
+        else:
+            count = sum(1 for point_names in PROFILE_POINT_NAMES.values() for name in point_names if name in self.profile_cursors)
+            self.radiation_status_label.setText(f"Radiation boundary points: {count}/8")
         if self.current_stage != "radiation":
             if self.current_stage != "laser":
                 for plot in self.profile_plots.values():
@@ -923,8 +1197,6 @@ class MainWindow(QMainWindow):
         selected_line = self.selected_profile_line if self.current_stage == "radiation" else None
         preview_points: dict[str, Point] = {}
         for line_name, point_names in PROFILE_POINT_NAMES.items():
-            orientation = "horizontal" if line_name in ("top", "bottom") else "vertical"
-            self._ensure_step_cursors(point_names, orientation)
             plot = self.profile_plots[line_name]
             plot.set_selected(line_name == selected_line)
             cursors = {name: self.profile_cursors[name] for name in point_names if name in self.profile_cursors}
@@ -932,18 +1204,6 @@ class MainWindow(QMainWindow):
             preview_points.update(self._profile_cursor_points(line_name, cursors))
         self.view.set_profile_cursor_points(preview_points)
         self._update_radiation_preview(preview_points)
-
-    def _ensure_step_cursors(self, names: tuple[str, str], orientation: str) -> None:
-        shape = self.view.image_shape()
-        if shape is None:
-            return
-        height, width = shape
-        if orientation == "horizontal":
-            default_positions = (width * 0.2, width * 0.8)
-        else:
-            default_positions = (height * 0.2, height * 0.8)
-        for name, position in zip(names, default_positions):
-            self.profile_cursors.setdefault(name, position)
 
     def _profile_cursor_points(self, line_name: str, cursors: dict[str, float]) -> dict[str, Point]:
         line = self.view.profile_lines().get(line_name)
@@ -1188,6 +1448,20 @@ def _selected_group_style() -> str:
 def _sort_profile(positions: np.ndarray, values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     order = np.argsort(positions)
     return positions[order], values[order]
+
+
+def _same_line(
+    line: tuple[Point, Point],
+    other: tuple[Point, Point] | None,
+) -> bool:
+    if other is None:
+        return False
+    return (
+        np.isclose(line[0].x, other[0].x)
+        and np.isclose(line[0].y, other[0].y)
+        and np.isclose(line[1].x, other[1].x)
+        and np.isclose(line[1].y, other[1].y)
+    )
 
 
 def _add_field_tree(parent: QTreeWidget | QTreeWidgetItem, label: str, field: FieldGeometry, area_unit: str) -> QTreeWidgetItem:

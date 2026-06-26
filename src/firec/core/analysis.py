@@ -39,6 +39,17 @@ class RadiationDetection:
     image_area: int
 
 
+@dataclass(frozen=True)
+class ProfileBoundaryDetection:
+    left_position: float
+    right_position: float
+    smoothed_values: np.ndarray
+    radiation_pixel_value: float
+    threshold_pixel_value: float
+    center_start_position: float
+    center_end_position: float
+
+
 def load_image(path: str | Path) -> np.ndarray:
     """Load a TIFF image as a numpy array."""
     image = tifffile.imread(path)
@@ -133,6 +144,69 @@ def line_profile(image: np.ndarray, start: Point, end: Point) -> np.ndarray:
     return gray[y_indices, x_indices].astype(np.float64)
 
 
+def moving_average_profile(values: np.ndarray, window: int) -> np.ndarray:
+    if values.size == 0:
+        return values.astype(np.float64)
+    window = max(1, int(window))
+    if window == 1:
+        return values.astype(np.float64)
+    left = window // 2
+    right = window - 1 - left
+    padded = np.pad(values.astype(np.float64), (left, right), mode="edge")
+    kernel = np.full(window, 1.0 / window, dtype=np.float64)
+    return np.convolve(padded, kernel, mode="valid")
+
+
+def detect_profile_boundaries(
+    positions: np.ndarray,
+    values: np.ndarray,
+    film_pixel_value: float,
+    threshold_percent: float = 50.0,
+    center_percent: float = 20.0,
+    smoothing_window: int = 5,
+) -> ProfileBoundaryDetection:
+    if positions.size != values.size or values.size < 3:
+        raise ValueError("Profile must contain at least three samples.")
+
+    smoothed = moving_average_profile(values, smoothing_window)
+    center_fraction = max(0.01, min(1.0, float(center_percent) * 2.0 / 100.0))
+    center_size = max(1, int(round(values.size * center_fraction)))
+    center_start = max(0, (values.size - center_size) // 2)
+    center_end = min(values.size, center_start + center_size)
+    radiation_pixel_value = float(np.mean(smoothed[center_start:center_end]))
+
+    denominator = float(film_pixel_value) - radiation_pixel_value
+    if np.isclose(denominator, 0.0):
+        raise ValueError("Film and radiation pixel values are too close.")
+    threshold_pixel_value = float(film_pixel_value) - (float(threshold_percent) / 100.0) * denominator
+
+    left = _find_outward_crossing(positions, smoothed, threshold_pixel_value, center_start, -1)
+    right = _find_outward_crossing(positions, smoothed, threshold_pixel_value, center_end - 1, 1)
+    if left is None or right is None:
+        raise ValueError("Could not find threshold crossings on both sides of the profile.")
+    return ProfileBoundaryDetection(
+        left,
+        right,
+        smoothed,
+        radiation_pixel_value,
+        threshold_pixel_value,
+        float(positions[center_start]),
+        float(positions[max(center_start, center_end - 1)]),
+    )
+
+
+def circular_region_mean(image: np.ndarray, center: Point, radius: float) -> float:
+    gray = ensure_grayscale(image).astype(np.float64)
+    if radius <= 0:
+        raise ValueError("Radius must be greater than zero.")
+    height, width = gray.shape[:2]
+    y_indices, x_indices = np.ogrid[:height, :width]
+    mask = (x_indices - center.x) ** 2 + (y_indices - center.y) ** 2 <= radius**2
+    if not np.any(mask):
+        raise ValueError("Circle does not include any pixels.")
+    return float(np.mean(gray[mask]))
+
+
 def invert_profile(values: np.ndarray) -> np.ndarray:
     if values.size == 0:
         return values
@@ -162,6 +236,25 @@ def ensure_grayscale(image: np.ndarray) -> np.ndarray:
     if image.ndim == 3:
         return cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
     raise ValueError("Unsupported image dimensions.")
+
+
+def _find_outward_crossing(
+    positions: np.ndarray,
+    values: np.ndarray,
+    threshold: float,
+    start_index: int,
+    step: int,
+) -> float | None:
+    index = start_index
+    while 0 <= index + step < values.size:
+        next_index = index + step
+        value = float(values[index])
+        next_value = float(values[next_index])
+        if (value - threshold) * (next_value - threshold) <= 0.0 and not np.isclose(value, next_value):
+            ratio = (threshold - value) / (next_value - value)
+            return float(positions[index] + ratio * (positions[next_index] - positions[index]))
+        index = next_index
+    return None
 
 
 def compare_fields(radiation_field: RotatedRect, light_field: RotatedRect) -> AnalysisResult:

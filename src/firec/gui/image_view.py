@@ -3,9 +3,17 @@ from __future__ import annotations
 from collections.abc import Callable
 from math import hypot
 
-from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt
 from PySide6.QtGui import QBrush, QColor, QFont, QImage, QKeyEvent, QPen, QPixmap, QPolygonF
-from PySide6.QtWidgets import QFrame, QGraphicsItem, QGraphicsPixmapItem, QGraphicsPolygonItem, QGraphicsScene, QGraphicsView
+from PySide6.QtWidgets import (
+    QFrame,
+    QGraphicsItem,
+    QGraphicsPixmapItem,
+    QGraphicsPolygonItem,
+    QGraphicsScene,
+    QGraphicsView,
+    QSizePolicy,
+)
 
 from firec.core.analysis import normalize_for_display
 from firec.core.geometry import Point, RotatedRect
@@ -33,6 +41,7 @@ class ImageView(QGraphicsView):
         self.setFrameShape(QFrame.NoFrame)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         self._pixmap_item: QGraphicsPixmapItem | None = None
         self._radiation_item: QGraphicsPolygonItem | None = None
@@ -44,9 +53,11 @@ class ImageView(QGraphicsView):
         self._vertex_items: list[QGraphicsItem] = []
         self._edge_length_items: list[QGraphicsItem] = []
         self._laser_center_items: list[QGraphicsItem] = []
+        self._circle_overlay_items: list[QGraphicsItem] = []
         self._target_items: list[QGraphicsItem] = []
         self._handle_items: list[QGraphicsItem] = []
         self._image_shape: tuple[int, int] | None = None
+        self._image_aspect_ratio: float | None = None
         self.radiation_rect: RotatedRect | None = None
         self.radiation_polygon: tuple[Point, Point, Point, Point] | None = None
         self.light_rect: RotatedRect | None = None
@@ -107,8 +118,10 @@ class ImageView(QGraphicsView):
         self._vertex_items = []
         self._edge_length_items = []
         self._laser_center_items = []
+        self._circle_overlay_items = []
         self._pixmap_item = self.scene().addPixmap(pixmap)
         self._image_shape = (height, width)
+        self._image_aspect_ratio = width / height if height > 0 else None
         self.radiation_rect = None
         self.radiation_polygon = None
         self.light_rect = None
@@ -130,6 +143,7 @@ class ImageView(QGraphicsView):
         self._emit_profile_lines_changed()
         self._emit_profile_line_selected()
         self.reset_view()
+        self.updateGeometry()
 
     def set_profile_orientation(self, orientation: str | None) -> None:
         if orientation not in (None, "horizontal", "vertical"):
@@ -170,6 +184,21 @@ class ImageView(QGraphicsView):
     def image_shape(self) -> tuple[int, int] | None:
         return self._image_shape
 
+    def hasHeightForWidth(self) -> bool:
+        return self._image_aspect_ratio is not None
+
+    def heightForWidth(self, width: int) -> int:
+        if self._image_aspect_ratio is None or self._image_aspect_ratio <= 0:
+            return super().heightForWidth(width)
+        return max(1, round(width / self._image_aspect_ratio))
+
+    def sizeHint(self):  # type: ignore[override]
+        if self._image_aspect_ratio is None:
+            return super().sizeHint()
+        width = 640
+        height = max(1, round(width / self._image_aspect_ratio))
+        return QSize(width, height)
+
     def select_profile_line(self, line_name: str | None) -> None:
         self._set_selected_profile_line(line_name)
 
@@ -199,6 +228,35 @@ class ImageView(QGraphicsView):
     def set_laser_center(self, point: Point | None) -> None:
         self.laser_center = point
         self._draw_laser_center()
+
+    def set_circle_overlay(self, center: Point | None, radius: float | None) -> None:
+        self._clear_circle_overlay_items()
+        if center is None or radius is None or radius <= 0:
+            return
+        outline = self.scene().addEllipse(
+            center.x - radius,
+            center.y - radius,
+            radius * 2.0,
+            radius * 2.0,
+            QPen(QColor(255, 170, 0), 2),
+            QBrush(Qt.NoBrush),
+        )
+        horizontal = self.scene().addLine(center.x - radius, center.y, center.x + radius, center.y, QPen(QColor(255, 170, 0), 1))
+        vertical = self.scene().addLine(center.x, center.y - radius, center.x, center.y + radius, QPen(QColor(255, 170, 0), 1))
+        dot = self.scene().addEllipse(
+            center.x - 3,
+            center.y - 3,
+            6,
+            6,
+            QPen(Qt.white, 1),
+            QBrush(QColor(255, 170, 0)),
+        )
+        label = self.scene().addText("X,Y,R")
+        label.setDefaultTextColor(QColor(255, 170, 0))
+        label.setPos(center.x + radius + 4, center.y + radius + 4)
+        for item in (outline, horizontal, vertical, dot, label):
+            item.setZValue(16)
+            self._circle_overlay_items.append(item)
 
     def _draw_center_points(self) -> None:
         self._clear_center_point_items()
@@ -710,6 +768,11 @@ class ImageView(QGraphicsView):
         for item in self._laser_center_items:
             self.scene().removeItem(item)
         self._laser_center_items = []
+
+    def _clear_circle_overlay_items(self) -> None:
+        for item in self._circle_overlay_items:
+            self.scene().removeItem(item)
+        self._circle_overlay_items = []
 
     def profile_lines(self) -> dict[str, tuple[Point, Point]]:
         if self._image_shape is None:
