@@ -3,17 +3,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from math import hypot
 
+import numpy as np
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt
 from PySide6.QtGui import QBrush, QColor, QFont, QImage, QKeyEvent, QPen, QPixmap, QPolygonF
-from PySide6.QtWidgets import (
-    QFrame,
-    QGraphicsItem,
-    QGraphicsPixmapItem,
-    QGraphicsPolygonItem,
-    QGraphicsScene,
-    QGraphicsView,
-    QSizePolicy,
-)
+from PySide6.QtWidgets import QFrame, QGraphicsItem, QGraphicsPixmapItem, QGraphicsPolygonItem, QGraphicsScene, QGraphicsView, QSizePolicy
 
 from firec.core.analysis import normalize_for_display
 from firec.core.geometry import Point, RotatedRect
@@ -27,6 +20,9 @@ RADIATION_FILL_COLOR = QColor(80, 255, 120, 55)
 LIGHT_EDGE_COLOR = QColor(255, 145, 205)
 LIGHT_EDGE_SELECTED_COLOR = QColor(220, 0, 0)
 POINT_COLOR = QColor(255, 120, 0)
+ROI_CIRCLE_COLOR = QColor(255, 170, 0)
+ROI_RECT_COLOR = QColor(255, 190, 0)
+RULER_COLOR = QColor(255, 90, 160)
 
 
 class ImageView(QGraphicsView):
@@ -56,6 +52,8 @@ class ImageView(QGraphicsView):
         self._edge_length_items: list[QGraphicsItem] = []
         self._laser_center_items: list[QGraphicsItem] = []
         self._circle_overlay_items: list[QGraphicsItem] = []
+        self._rect_overlay_items: list[QGraphicsItem] = []
+        self._ruler_overlay_items: list[QGraphicsItem] = []
         self._target_items: list[QGraphicsItem] = []
         self._handle_items: list[QGraphicsItem] = []
         self._image_shape: tuple[int, int] | None = None
@@ -91,12 +89,23 @@ class ImageView(QGraphicsView):
         self.show_light_vertices = True
         self.show_laser_center = True
         self.editing_enabled = True
-        self.pan_enabled = False
+        self._tool_mode: str | None = None
+        self._circle_roi: tuple[Point, float] | None = None
+        self._rect_roi: tuple[Point, Point] | None = None
+        self._ruler_points: tuple[Point, Point] | None = None
+        self._ruler_pending_start: Point | None = None
+        self._roi_drag_mode: str | None = None
+        self._roi_drag_anchor: QPointF | None = None
+        self._roi_drag_offset: QPointF | None = None
+        self._zoom_drag_center: QPointF | None = None
         self.on_rect_changed: Callable[[str, RotatedRect], None] | None = None
         self.on_tab_navigation: Callable[[bool], None] | None = None
         self.on_profile_lines_changed: Callable[[dict[str, tuple[Point, Point]]], None] | None = None
         self.on_profile_line_selected: Callable[[str | None], None] | None = None
         self.on_visible_scene_rect_changed: Callable[[QRectF], None] | None = None
+        self.on_circle_roi_changed: Callable[[tuple[Point, float] | None], None] | None = None
+        self.on_rect_roi_changed: Callable[[tuple[Point, Point] | None], None] | None = None
+        self.on_ruler_changed: Callable[[tuple[Point, Point] | None], None] | None = None
 
         self.horizontalScrollBar().valueChanged.connect(lambda value: self._emit_visible_scene_rect_changed())
         self.verticalScrollBar().valueChanged.connect(lambda value: self._emit_visible_scene_rect_changed())
@@ -122,6 +131,8 @@ class ImageView(QGraphicsView):
         self._edge_length_items = []
         self._laser_center_items = []
         self._circle_overlay_items = []
+        self._rect_overlay_items = []
+        self._ruler_overlay_items = []
         self._pixmap_item = self.scene().addPixmap(pixmap)
         self._image_shape = (height, width)
         self._image_aspect_ratio = width / height if height > 0 else None
@@ -132,6 +143,10 @@ class ImageView(QGraphicsView):
         self.radiation_points = {}
         self.center_points = {}
         self.laser_center = None
+        self._circle_roi = None
+        self._rect_roi = None
+        self._ruler_points = None
+        self._ruler_pending_start = None
         self.top_profile_y = height * 0.25
         self.bottom_profile_y = height * 0.75
         self.left_profile_x = width * 0.25
@@ -145,6 +160,9 @@ class ImageView(QGraphicsView):
         self._light_item = None
         self._emit_profile_lines_changed()
         self._emit_profile_line_selected()
+        self._emit_circle_roi_changed()
+        self._emit_rect_roi_changed()
+        self._emit_ruler_changed()
         self.reset_view()
         self.updateGeometry()
 
@@ -236,33 +254,49 @@ class ImageView(QGraphicsView):
         self._draw_laser_center()
 
     def set_circle_overlay(self, center: Point | None, radius: float | None) -> None:
-        self._clear_circle_overlay_items()
-        if center is None or radius is None or radius <= 0:
-            return
-        outline = self.scene().addEllipse(
-            center.x - radius,
-            center.y - radius,
-            radius * 2.0,
-            radius * 2.0,
-            QPen(QColor(255, 170, 0), 2),
-            QBrush(Qt.NoBrush),
-        )
-        horizontal = self.scene().addLine(center.x - radius, center.y, center.x + radius, center.y, QPen(QColor(255, 170, 0), 1))
-        vertical = self.scene().addLine(center.x, center.y - radius, center.x, center.y + radius, QPen(QColor(255, 170, 0), 1))
-        dot = self.scene().addEllipse(
-            center.x - 3,
-            center.y - 3,
-            6,
-            6,
-            QPen(Qt.white, 1),
-            QBrush(QColor(255, 170, 0)),
-        )
-        label = self.scene().addText("X,Y,R")
-        label.setDefaultTextColor(QColor(255, 170, 0))
-        label.setPos(center.x + radius + 4, center.y + radius + 4)
-        for item in (outline, horizontal, vertical, dot, label):
-            item.setZValue(16)
-            self._circle_overlay_items.append(item)
+        self.set_circle_roi(None if center is None or radius is None else (center, radius))
+
+    def set_circle_roi(self, roi: tuple[Point, float] | None) -> None:
+        self._circle_roi = None if roi is None or roi[1] <= 0 else roi
+        self._draw_circle_roi()
+        self._emit_circle_roi_changed()
+
+    def set_rect_roi(self, roi: tuple[Point, Point] | None) -> None:
+        self._rect_roi = None if roi is None else roi
+        self._draw_rect_roi()
+        self._emit_rect_roi_changed()
+
+    def set_ruler_points(self, points: tuple[Point, Point] | None) -> None:
+        self._ruler_points = None if points is None else points
+        self._ruler_pending_start = None
+        self._draw_ruler()
+        self._emit_ruler_changed()
+
+    def set_tool_mode(self, mode: str | None) -> None:
+        if mode not in (None, "pan", "zoom", "circle", "rect", "ruler"):
+            raise ValueError(f"Unknown tool mode: {mode}")
+        if mode != self._tool_mode:
+            self._roi_drag_mode = None
+            self._roi_drag_anchor = None
+            self._roi_drag_offset = None
+            self._zoom_drag_center = None
+            if mode != "ruler":
+                self._ruler_pending_start = None
+        self._tool_mode = mode
+        self._apply_tool_cursor()
+
+    def set_pan_enabled(self, enabled: bool) -> None:
+        self.set_tool_mode("pan" if enabled else None)
+
+    def _apply_tool_cursor(self) -> None:
+        if self._tool_mode == "pan":
+            self.setCursor(Qt.OpenHandCursor)
+        elif self._tool_mode == "zoom":
+            self.setCursor(Qt.SizeVerCursor)
+        elif self._tool_mode is None:
+            self.setCursor(Qt.ArrowCursor)
+        else:
+            self.setCursor(Qt.CrossCursor)
 
     def _draw_center_points(self) -> None:
         self._clear_center_point_items()
@@ -457,20 +491,18 @@ class ImageView(QGraphicsView):
         self.fitInView(self._pixmap_item, Qt.KeepAspectRatio)
         self._emit_visible_scene_rect_changed()
 
-    def set_pan_enabled(self, enabled: bool) -> None:
-        self.pan_enabled = enabled
-        self.setCursor(Qt.OpenHandCursor if enabled else Qt.ArrowCursor)
-
     def zoom_in(self) -> None:
-        self._zoom_by(1.1)
+        self._zoom_by(1.1, self.visible_scene_rect().center())
 
     def zoom_out(self) -> None:
-        self._zoom_by(1.0 / 1.1)
+        self._zoom_by(1.0 / 1.1, self.visible_scene_rect().center())
 
-    def _zoom_by(self, factor: float) -> None:
+    def _zoom_by(self, factor: float, center_scene_pos: QPointF | None = None) -> None:
         if self._pixmap_item is None:
             return
         self.scale(factor, factor)
+        if center_scene_pos is not None:
+            self.centerOn(center_scene_pos)
         self._emit_visible_scene_rect_changed()
 
     def wheelEvent(self, event) -> None:
@@ -490,12 +522,19 @@ class ImageView(QGraphicsView):
             return
 
         scene_pos = self.mapToScene(event.position().toPoint())
-        profile_line = (
-            self._hit_profile_line(scene_pos)
-            if self.editing_enabled and self.profile_lines_editable and self.active_field in ("laser", "radiation")
-            else None
-        )
-        target = self._hit_active_target(scene_pos) if self.editing_enabled and self.active_field == "light" else None
+        if self._tool_mode in ("circle", "rect", "ruler", "zoom"):
+            self._handle_tool_mouse_press(scene_pos, event.position())
+            event.accept()
+            return
+        profile_line = None
+        target = None
+        if self._tool_mode is None:
+            profile_line = (
+                self._hit_profile_line(scene_pos)
+                if self.editing_enabled and self.profile_lines_editable and self.active_field in ("laser", "radiation")
+                else None
+            )
+            target = self._hit_active_target(scene_pos) if self.editing_enabled and self.active_field == "light" else None
         self._last_scene_pos = scene_pos
         self._last_view_pos = event.position()
         if profile_line is not None:
@@ -507,7 +546,7 @@ class ImageView(QGraphicsView):
             self._drag_edge = target
             self._set_selected_profile_line(None)
             self.select_target(target)
-        elif self.pan_enabled:
+        elif self._tool_mode == "pan":
             self._drag_mode = "pan"
             self._drag_edge = None
             self.setCursor(Qt.ClosedHandCursor)
@@ -517,6 +556,12 @@ class ImageView(QGraphicsView):
         event.accept()
 
     def mouseMoveEvent(self, event) -> None:
+        if self._tool_mode in ("circle", "rect", "ruler", "zoom") and self._handle_tool_mouse_move(
+            self.mapToScene(event.position().toPoint()),
+            event.position(),
+        ):
+            event.accept()
+            return
         if self._drag_mode is None or self._last_scene_pos is None or self._last_view_pos is None:
             super().mouseMoveEvent(event)
             return
@@ -551,12 +596,14 @@ class ImageView(QGraphicsView):
         event.accept()
 
     def mouseReleaseEvent(self, event) -> None:
+        if self._tool_mode in ("circle", "rect", "ruler", "zoom") and self._handle_tool_mouse_release(self.mapToScene(event.position().toPoint())):
+            event.accept()
+            return
         self._drag_mode = None
         self._drag_edge = None
         self._last_scene_pos = None
         self._last_view_pos = None
-        if self.pan_enabled:
-            self.setCursor(Qt.OpenHandCursor)
+        self._apply_tool_cursor()
         event.accept()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
@@ -567,6 +614,9 @@ class ImageView(QGraphicsView):
             return
         if event.key() in (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down):
             if not self.editing_enabled:
+                event.accept()
+                return
+            if self._tool_mode is not None:
                 event.accept()
                 return
             if self.selected_profile_line is not None and self.profile_lines_editable:
@@ -787,6 +837,16 @@ class ImageView(QGraphicsView):
             self.scene().removeItem(item)
         self._circle_overlay_items = []
 
+    def _clear_rect_overlay_items(self) -> None:
+        for item in self._rect_overlay_items:
+            self.scene().removeItem(item)
+        self._rect_overlay_items = []
+
+    def _clear_ruler_overlay_items(self) -> None:
+        for item in self._ruler_overlay_items:
+            self.scene().removeItem(item)
+        self._ruler_overlay_items = []
+
     def profile_lines(self) -> dict[str, tuple[Point, Point]]:
         if self._image_shape is None:
             return {}
@@ -962,6 +1022,18 @@ class ImageView(QGraphicsView):
         if self.on_profile_line_selected is not None:
             self.on_profile_line_selected(self.selected_profile_line)
 
+    def _emit_circle_roi_changed(self) -> None:
+        if self.on_circle_roi_changed is not None:
+            self.on_circle_roi_changed(self._circle_roi)
+
+    def _emit_rect_roi_changed(self) -> None:
+        if self.on_rect_roi_changed is not None:
+            self.on_rect_roi_changed(self._rect_roi)
+
+    def _emit_ruler_changed(self) -> None:
+        if self.on_ruler_changed is not None:
+            self.on_ruler_changed(self._ruler_points)
+
     def visible_scene_rect(self) -> QRectF:
         return self.mapToScene(self.viewport().rect()).boundingRect()
 
@@ -985,6 +1057,346 @@ class ImageView(QGraphicsView):
                 best_name = name
                 best_distance = distance
         return best_name
+
+    def _scene_tolerance(self) -> float:
+        return 12.0 / max(self.transform().m11(), 0.01)
+
+    def _point_distance(self, a: QPointF, b: QPointF) -> float:
+        return hypot(a.x() - b.x(), a.y() - b.y())
+
+    def _point_in_rect(self, point: QPointF, top_left: QPointF, bottom_right: QPointF) -> bool:
+        left = min(top_left.x(), bottom_right.x())
+        right = max(top_left.x(), bottom_right.x())
+        top = min(top_left.y(), bottom_right.y())
+        bottom = max(top_left.y(), bottom_right.y())
+        return left <= point.x() <= right and top <= point.y() <= bottom
+
+    def _handle_tool_mouse_press(self, scene_pos: QPointF, view_pos: QPointF) -> None:
+        if self._tool_mode == "circle":
+            self._circle_tool_press(scene_pos, view_pos)
+        elif self._tool_mode == "rect":
+            self._rect_tool_press(scene_pos, view_pos)
+        elif self._tool_mode == "ruler":
+            self._ruler_tool_press(scene_pos)
+        elif self._tool_mode == "zoom":
+            self._zoom_tool_press(view_pos)
+
+    def _handle_tool_mouse_move(self, scene_pos: QPointF, view_pos: QPointF) -> bool:
+        if self._tool_mode == "circle":
+            return self._circle_tool_move(scene_pos)
+        if self._tool_mode == "rect":
+            return self._rect_tool_move(scene_pos)
+        if self._tool_mode == "ruler":
+            return self._ruler_tool_move(scene_pos)
+        if self._tool_mode == "zoom":
+            return self._zoom_tool_move(view_pos)
+        return False
+
+    def _handle_tool_mouse_release(self, scene_pos: QPointF) -> bool:
+        if self._tool_mode == "circle":
+            return self._circle_tool_release(scene_pos)
+        if self._tool_mode == "rect":
+            return self._rect_tool_release(scene_pos)
+        if self._tool_mode == "ruler":
+            return self._ruler_tool_release(scene_pos)
+        if self._tool_mode == "zoom":
+            return self._zoom_tool_release(scene_pos)
+        return False
+
+    def _circle_tool_press(self, scene_pos: QPointF, view_pos: QPointF) -> None:
+        self._drag_mode = None
+        self._roi_drag_anchor = scene_pos
+        self._roi_drag_offset = None
+        if self._circle_roi is not None:
+            center, radius = self._circle_roi
+            center_point = QPointF(center.x, center.y)
+            handle_point = QPointF(center.x + radius, center.y)
+            if self._point_distance(scene_pos, center_point) <= self._scene_tolerance():
+                self._roi_drag_mode = "circle_move"
+                self._roi_drag_offset = QPointF(scene_pos.x() - center.x, scene_pos.y() - center.y)
+                return
+            if self._point_distance(scene_pos, handle_point) <= self._scene_tolerance():
+                self._roi_drag_mode = "circle_resize"
+                return
+            if (scene_pos.x() - center.x) ** 2 + (scene_pos.y() - center.y) ** 2 <= radius**2:
+                self._roi_drag_mode = "circle_move"
+                self._roi_drag_offset = QPointF(scene_pos.x() - center.x, scene_pos.y() - center.y)
+                return
+        self._roi_drag_mode = "circle_create"
+        self._circle_roi = (Point(scene_pos.x(), scene_pos.y()), 0.0)
+        self._draw_circle_roi()
+
+    def _circle_tool_move(self, scene_pos: QPointF) -> bool:
+        if self._roi_drag_mode is None:
+            return False
+        if self._roi_drag_mode == "circle_create" and self._roi_drag_anchor is not None:
+            center = Point(self._roi_drag_anchor.x(), self._roi_drag_anchor.y())
+            radius = self._point_distance(scene_pos, self._roi_drag_anchor)
+            self._circle_roi = (center, radius)
+            self._draw_circle_roi()
+            self._emit_circle_roi_changed()
+            return True
+        if self._roi_drag_mode == "circle_move" and self._circle_roi is not None and self._roi_drag_offset is not None:
+            center = Point(scene_pos.x() - self._roi_drag_offset.x(), scene_pos.y() - self._roi_drag_offset.y())
+            self._circle_roi = (center, self._circle_roi[1])
+            self._draw_circle_roi()
+            self._emit_circle_roi_changed()
+            return True
+        if self._roi_drag_mode == "circle_resize" and self._circle_roi is not None:
+            center, _ = self._circle_roi
+            radius = hypot(scene_pos.x() - center.x, scene_pos.y() - center.y)
+            self._circle_roi = (center, radius)
+            self._draw_circle_roi()
+            self._emit_circle_roi_changed()
+            return True
+        return False
+
+    def _circle_tool_release(self, scene_pos: QPointF) -> bool:
+        if self._roi_drag_mode is None:
+            return False
+        self._roi_drag_mode = None
+        self._roi_drag_anchor = None
+        self._roi_drag_offset = None
+        self._emit_circle_roi_changed()
+        return True
+
+    def _rect_tool_press(self, scene_pos: QPointF, view_pos: QPointF) -> None:
+        self._drag_mode = None
+        self._roi_drag_anchor = scene_pos
+        self._roi_drag_offset = None
+        if self._rect_roi is not None:
+            top_left = QPointF(min(self._rect_roi[0].x, self._rect_roi[1].x), min(self._rect_roi[0].y, self._rect_roi[1].y))
+            bottom_right = QPointF(max(self._rect_roi[0].x, self._rect_roi[1].x), max(self._rect_roi[0].y, self._rect_roi[1].y))
+            corners = {
+                "top_left": top_left,
+                "top_right": QPointF(bottom_right.x(), top_left.y()),
+                "bottom_right": bottom_right,
+                "bottom_left": QPointF(top_left.x(), bottom_right.y()),
+            }
+            for name, corner in corners.items():
+                if self._point_distance(scene_pos, corner) <= self._scene_tolerance():
+                    self._roi_drag_mode = f"rect_resize_{name}"
+                    return
+            if self._point_in_rect(scene_pos, top_left, bottom_right):
+                self._roi_drag_mode = "rect_move"
+                self._roi_drag_offset = QPointF(scene_pos.x() - top_left.x(), scene_pos.y() - top_left.y())
+                self._rect_roi = (Point(top_left.x(), top_left.y()), Point(bottom_right.x(), bottom_right.y()))
+                return
+        self._roi_drag_mode = "rect_create"
+        self._rect_roi = (Point(scene_pos.x(), scene_pos.y()), Point(scene_pos.x(), scene_pos.y()))
+        self._draw_rect_roi()
+
+    def _rect_tool_move(self, scene_pos: QPointF) -> bool:
+        if self._roi_drag_mode is None:
+            return False
+        if self._roi_drag_mode == "rect_create" and self._roi_drag_anchor is not None:
+            self._rect_roi = (Point(self._roi_drag_anchor.x(), self._roi_drag_anchor.y()), Point(scene_pos.x(), scene_pos.y()))
+            self._draw_rect_roi()
+            self._emit_rect_roi_changed()
+            return True
+        if self._roi_drag_mode == "rect_move" and self._rect_roi is not None and self._roi_drag_offset is not None:
+            current_top_left = QPointF(min(self._rect_roi[0].x, self._rect_roi[1].x), min(self._rect_roi[0].y, self._rect_roi[1].y))
+            current_bottom_right = QPointF(max(self._rect_roi[0].x, self._rect_roi[1].x), max(self._rect_roi[0].y, self._rect_roi[1].y))
+            width = current_bottom_right.x() - current_top_left.x()
+            height = current_bottom_right.y() - current_top_left.y()
+            top_left = QPointF(scene_pos.x() - self._roi_drag_offset.x(), scene_pos.y() - self._roi_drag_offset.y())
+            bottom_right = QPointF(top_left.x() + width, top_left.y() + height)
+            self._rect_roi = (Point(top_left.x(), top_left.y()), Point(bottom_right.x(), bottom_right.y()))
+            self._draw_rect_roi()
+            self._emit_rect_roi_changed()
+            return True
+        if self._roi_drag_mode.startswith("rect_resize_") and self._rect_roi is not None:
+            mode = self._roi_drag_mode.removeprefix("rect_resize_")
+            top_left = Point(min(self._rect_roi[0].x, self._rect_roi[1].x), min(self._rect_roi[0].y, self._rect_roi[1].y))
+            bottom_right = Point(max(self._rect_roi[0].x, self._rect_roi[1].x), max(self._rect_roi[0].y, self._rect_roi[1].y))
+            corners = {
+                "top_left": Point(scene_pos.x(), scene_pos.y()),
+                "top_right": Point(scene_pos.x(), scene_pos.y()),
+                "bottom_right": Point(scene_pos.x(), scene_pos.y()),
+                "bottom_left": Point(scene_pos.x(), scene_pos.y()),
+            }
+            if mode == "top_left":
+                self._rect_roi = (Point(scene_pos.x(), scene_pos.y()), Point(bottom_right.x, bottom_right.y))
+            elif mode == "top_right":
+                self._rect_roi = (Point(top_left.x, scene_pos.y()), Point(scene_pos.x(), bottom_right.y))
+            elif mode == "bottom_right":
+                self._rect_roi = (Point(top_left.x, top_left.y), Point(scene_pos.x(), scene_pos.y()))
+            elif mode == "bottom_left":
+                self._rect_roi = (Point(scene_pos.x(), top_left.y), Point(bottom_right.x, scene_pos.y()))
+            self._draw_rect_roi()
+            self._emit_rect_roi_changed()
+            return True
+        return False
+
+    def _rect_tool_release(self, scene_pos: QPointF) -> bool:
+        if self._roi_drag_mode is None:
+            return False
+        self._roi_drag_mode = None
+        self._roi_drag_anchor = None
+        self._roi_drag_offset = None
+        self._emit_rect_roi_changed()
+        return True
+
+    def _ruler_tool_press(self, scene_pos: QPointF) -> None:
+        self._drag_mode = None
+        if self._ruler_pending_start is None:
+            if self._ruler_points is not None:
+                start, end = self._ruler_points
+                start_point = QPointF(start.x, start.y)
+                end_point = QPointF(end.x, end.y)
+                if self._point_distance(scene_pos, start_point) <= self._scene_tolerance():
+                    self._roi_drag_mode = "ruler_move_start"
+                    return
+                if self._point_distance(scene_pos, end_point) <= self._scene_tolerance():
+                    self._roi_drag_mode = "ruler_move_end"
+                    return
+            self._ruler_pending_start = Point(scene_pos.x(), scene_pos.y())
+            self._ruler_points = (self._ruler_pending_start, self._ruler_pending_start)
+            self._draw_ruler()
+            self._emit_ruler_changed()
+            return
+        self._ruler_points = (self._ruler_pending_start, Point(scene_pos.x(), scene_pos.y()))
+        self._ruler_pending_start = None
+        self._roi_drag_mode = None
+        self._draw_ruler()
+        self._emit_ruler_changed()
+
+    def _ruler_tool_move(self, scene_pos: QPointF) -> bool:
+        if self._roi_drag_mode == "ruler_create" and self._ruler_pending_start is not None:
+            self._ruler_points = (self._ruler_pending_start, Point(scene_pos.x(), scene_pos.y()))
+            self._draw_ruler()
+            self._emit_ruler_changed()
+            return True
+        if self._roi_drag_mode == "ruler_move_start" and self._ruler_points is not None:
+            _, end = self._ruler_points
+            self._ruler_points = (Point(scene_pos.x(), scene_pos.y()), end)
+            self._draw_ruler()
+            self._emit_ruler_changed()
+            return True
+        if self._roi_drag_mode == "ruler_move_end" and self._ruler_points is not None:
+            start, _ = self._ruler_points
+            self._ruler_points = (start, Point(scene_pos.x(), scene_pos.y()))
+            self._draw_ruler()
+            self._emit_ruler_changed()
+            return True
+        return False
+
+    def _ruler_tool_release(self, scene_pos: QPointF) -> bool:
+        if self._roi_drag_mode is None:
+            return False
+        if self._roi_drag_mode == "ruler_create" and self._ruler_points is not None:
+            self._ruler_points = (self._ruler_pending_start or self._ruler_points[0], Point(scene_pos.x(), scene_pos.y()))
+            self._ruler_pending_start = None
+            self._draw_ruler()
+            self._emit_ruler_changed()
+        self._roi_drag_mode = None
+        return True
+
+    def _zoom_tool_press(self, view_pos: QPointF) -> None:
+        self._drag_mode = "zoom"
+        self._drag_edge = None
+        self._last_view_pos = view_pos
+        self._zoom_drag_center = self.visible_scene_rect().center()
+
+    def _zoom_tool_move(self, view_pos: QPointF) -> bool:
+        if self._drag_mode != "zoom" or self._last_view_pos is None or self._zoom_drag_center is None:
+            return False
+        delta = view_pos - self._last_view_pos
+        if delta.y() == 0:
+            return True
+        factor = pow(1.004, -delta.y())
+        factor = max(0.5, min(2.0, factor))
+        self._zoom_by(factor, self._zoom_drag_center)
+        self._last_view_pos = view_pos
+        return True
+
+    def _zoom_tool_release(self, scene_pos: QPointF) -> bool:
+        if self._drag_mode != "zoom":
+            return False
+        self._drag_mode = None
+        self._last_view_pos = None
+        self._zoom_drag_center = None
+        self._apply_tool_cursor()
+        return True
+
+    def _draw_circle_roi(self) -> None:
+        self._clear_circle_overlay_items()
+        if self._circle_roi is None:
+            return
+        center, radius = self._circle_roi
+        if radius <= 0:
+            return
+        outline = self.scene().addEllipse(
+            center.x - radius,
+            center.y - radius,
+            radius * 2.0,
+            radius * 2.0,
+            QPen(ROI_CIRCLE_COLOR, 2),
+            QBrush(Qt.NoBrush),
+        )
+        handle = self.scene().addEllipse(
+            center.x + radius - 4,
+            center.y - 4,
+            8,
+            8,
+            QPen(Qt.white, 1),
+            QBrush(ROI_CIRCLE_COLOR),
+        )
+        dot = self.scene().addEllipse(
+            center.x - 3,
+            center.y - 3,
+            6,
+            6,
+            QPen(Qt.white, 1),
+            QBrush(ROI_CIRCLE_COLOR),
+        )
+        for item in (outline, handle, dot):
+            item.setZValue(16)
+            self._circle_overlay_items.append(item)
+
+    def _draw_rect_roi(self) -> None:
+        self._clear_rect_overlay_items()
+        if self._rect_roi is None:
+            return
+        top_left = Point(min(self._rect_roi[0].x, self._rect_roi[1].x), min(self._rect_roi[0].y, self._rect_roi[1].y))
+        bottom_right = Point(max(self._rect_roi[0].x, self._rect_roi[1].x), max(self._rect_roi[0].y, self._rect_roi[1].y))
+        if np.isclose(top_left.x, bottom_right.x) or np.isclose(top_left.y, bottom_right.y):
+            return
+        rect = self.scene().addRect(
+            top_left.x,
+            top_left.y,
+            bottom_right.x - top_left.x,
+            bottom_right.y - top_left.y,
+            QPen(ROI_RECT_COLOR, 2),
+            QBrush(Qt.NoBrush),
+        )
+        handles = [
+            (top_left.x, top_left.y),
+            (bottom_right.x, top_left.y),
+            (bottom_right.x, bottom_right.y),
+            (top_left.x, bottom_right.y),
+        ]
+        handle_items = [
+            self.scene().addEllipse(x - 3, y - 3, 6, 6, QPen(Qt.white, 1), QBrush(ROI_RECT_COLOR))
+            for x, y in handles
+        ]
+        rect.setZValue(16)
+        self._rect_overlay_items.append(rect)
+        for item in handle_items:
+            item.setZValue(17)
+            self._rect_overlay_items.append(item)
+
+    def _draw_ruler(self) -> None:
+        self._clear_ruler_overlay_items()
+        if self._ruler_points is None:
+            return
+        start, end = self._ruler_points
+        line = self.scene().addLine(start.x, start.y, end.x, end.y, QPen(RULER_COLOR, 2))
+        start_handle = self.scene().addEllipse(start.x - 3, start.y - 3, 6, 6, QPen(Qt.white, 1), QBrush(RULER_COLOR))
+        end_handle = self.scene().addEllipse(end.x - 3, end.y - 3, 6, 6, QPen(Qt.white, 1), QBrush(RULER_COLOR))
+        for item in (line, start_handle, end_handle):
+            item.setZValue(18)
+            self._ruler_overlay_items.append(item)
 
     def _hit_active_target(self, scene_pos: QPointF) -> str | None:
         rect = self._active_rect()

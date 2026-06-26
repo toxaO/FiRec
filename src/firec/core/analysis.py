@@ -234,6 +234,22 @@ def circular_region_mean(image: np.ndarray, center: Point, radius: float) -> flo
     return float(np.mean(gray[mask]))
 
 
+def rectangular_region_mean(image: np.ndarray, top_left: Point, bottom_right: Point) -> float:
+    gray = ensure_grayscale(image).astype(np.float64)
+    left = min(top_left.x, bottom_right.x)
+    right = max(top_left.x, bottom_right.x)
+    top = min(top_left.y, bottom_right.y)
+    bottom = max(top_left.y, bottom_right.y)
+    if np.isclose(left, right) or np.isclose(top, bottom):
+        raise ValueError("Rectangle must include a non-zero area.")
+    height, width = gray.shape[:2]
+    y_indices, x_indices = np.ogrid[:height, :width]
+    mask = (x_indices + 0.5 >= left) & (x_indices + 0.5 <= right) & (y_indices + 0.5 >= top) & (y_indices + 0.5 <= bottom)
+    if not np.any(mask):
+        raise ValueError("Rectangle does not include any pixels.")
+    return float(np.mean(gray[mask]))
+
+
 def invert_profile(values: np.ndarray) -> np.ndarray:
     if values.size == 0:
         return values

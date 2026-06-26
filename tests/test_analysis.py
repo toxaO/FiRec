@@ -12,6 +12,7 @@ from firec.core.analysis import (
     line_profile,
     load_image,
     moving_average_profile,
+    rectangular_region_mean,
     rotate_image_around_rect,
     rotate_image_to_align_rect,
     tiff_image_dpi,
@@ -121,6 +122,14 @@ def test_circular_region_mean_uses_raw_pixels_inside_radius():
     image = np.arange(25, dtype=np.uint8).reshape(5, 5)
 
     mean = circular_region_mean(image, Point(2, 2), 1.0)
+
+    assert mean == 12.0
+
+
+def test_rectangular_region_mean_uses_raw_pixels_inside_bounds():
+    image = np.arange(25, dtype=np.uint8).reshape(5, 5)
+
+    mean = rectangular_region_mean(image, Point(1, 1), Point(4, 4))
 
     assert mean == 12.0
 

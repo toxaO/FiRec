@@ -3,7 +3,8 @@ from math import atan2, degrees, hypot
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QSettings, QSize, Qt
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
@@ -46,6 +47,7 @@ from firec.core.analysis import (
     line_profile,
     load_image,
     moving_average_profile,
+    rectangular_region_mean,
     tiff_image_dpi,
 )
 from firec.core.geometry import Point, RotatedRect
@@ -60,6 +62,8 @@ PROFILE_POINT_NAMES = {
     "left": ("U2", "D2"),
     "right": ("U1", "D1"),
 }
+
+TOOLS_ICON_DIR = Path(__file__).resolve().parent / "assets" / "icons" / "tools"
 
 
 class MainWindow(QMainWindow):
@@ -88,6 +92,7 @@ class MainWindow(QMainWindow):
         self._applying_radiation_profile_lines = False
         self._loaded_image_default_dpi = 72.0
         self.selected_profile_line: str | None = "bottom"
+        self.tool_mode: str | None = "pan"
         self.settings = QSettings("FiRec", "FiRec")
         self.connection = connect_database("firec.sqlite")
 
@@ -97,6 +102,9 @@ class MainWindow(QMainWindow):
         self.view.on_profile_lines_changed = self._on_profile_lines_changed
         self.view.on_profile_line_selected = self._on_profile_line_selected
         self.view.on_visible_scene_rect_changed = self._on_visible_scene_rect_changed
+        self.view.on_circle_roi_changed = self._on_circle_roi_changed
+        self.view.on_rect_roi_changed = self._on_rect_roi_changed
+        self.view.on_ruler_changed = self._on_ruler_changed
 
         self.main_tabs = QTabWidget()
         self.main_tabs.currentChanged.connect(self._on_main_tab_changed)
@@ -112,11 +120,10 @@ class MainWindow(QMainWindow):
         self.smoothing_window_spin = QSpinBox()
         self.raw_profile_check = QCheckBox("Raw profile")
         self.smoothed_profile_check = QCheckBox("Smoothed profile")
-        self.circle_x_spin = QDoubleSpinBox()
-        self.circle_y_spin = QDoubleSpinBox()
-        self.circle_radius_spin = QDoubleSpinBox()
-        self.circle_mean_label = QLabel("")
-        self.circle_options_visible = False
+        self.tool_result_label = QLabel("")
+        self.circle_roi: tuple[Point, float] | None = None
+        self.rect_roi: tuple[Point, Point] | None = None
+        self.ruler_points: tuple[Point, Point] | None = None
         self.top_profile_plot = ProfilePlot("horizontal")
         self.bottom_profile_plot = ProfilePlot("horizontal")
         self.left_profile_plot = ProfilePlot("vertical")
@@ -144,6 +151,7 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status)
 
         self._build_layout()
+        self._set_tool_mode("pan")
         self._restore_settings()
         self.view.set_editing_enabled(False)
         self._update_profile_visibility()
@@ -241,7 +249,7 @@ class MainWindow(QMainWindow):
         image_layout.addLayout(top_profile_row)
         image_layout.addLayout(image_row, 1)
         image_layout.addLayout(bottom_profile_row)
-        image_layout.addLayout(self._zoom_buttons())
+        image_layout.addWidget(self._tool_frame())
 
         image_panel_layout = QVBoxLayout()
         image_panel_layout.setContentsMargins(0, 0, 0, 0)
@@ -343,19 +351,77 @@ class MainWindow(QMainWindow):
         zoom_in_button.clicked.connect(self.view.zoom_in)
         zoom_out_button = _button("Zoom Out")
         zoom_out_button.clicked.connect(self.view.zoom_out)
-        pan_button = _button("Pan")
-        pan_button.setCheckable(True)
-        pan_button.toggled.connect(self.view.set_pan_enabled)
         reset_button = _button("Reset")
         reset_button.clicked.connect(self.view.reset_view)
 
         layout = QHBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addStretch(1)
-        for button in (zoom_out_button, zoom_in_button, pan_button, reset_button):
+        for button in (zoom_out_button, zoom_in_button, reset_button):
             layout.addWidget(button)
         layout.addStretch(1)
         return layout
+
+    def _tool_frame(self) -> QGroupBox:
+        self.pan_tool_button = _icon_tool_button("tools_hand.png", "Pan")
+        self.zoom_tool_button = _icon_tool_button("tools_loupe.png", "Zoom")
+        self.circle_tool_button = _icon_tool_button("tools_circle.png", "Circle")
+        self.rect_tool_button = _icon_tool_button("tools_rect.png", "Rect")
+        self.ruler_tool_button = _icon_tool_button("tools_ruler.png", "Ruler")
+        reset_button = _icon_tool_button("tools_reset.png", "Reset")
+        reset_button.clicked.connect(self.view.reset_view)
+
+        for button in (
+            self.pan_tool_button,
+            self.zoom_tool_button,
+            self.circle_tool_button,
+            self.rect_tool_button,
+            self.ruler_tool_button,
+        ):
+            button.setCheckable(True)
+
+        self.tool_button_group = QButtonGroup(self)
+        self.tool_button_group.setExclusive(True)
+        for button in (
+            self.pan_tool_button,
+            self.zoom_tool_button,
+            self.circle_tool_button,
+            self.rect_tool_button,
+            self.ruler_tool_button,
+        ):
+            self.tool_button_group.addButton(button)
+
+        self.pan_tool_button.toggled.connect(lambda checked: checked and self._set_tool_mode("pan"))
+        self.zoom_tool_button.toggled.connect(lambda checked: checked and self._set_tool_mode("zoom"))
+        self.circle_tool_button.toggled.connect(lambda checked: checked and self._set_tool_mode("circle"))
+        self.rect_tool_button.toggled.connect(lambda checked: checked and self._set_tool_mode("rect"))
+        self.ruler_tool_button.toggled.connect(lambda checked: checked and self._set_tool_mode("ruler"))
+
+        tool_row = QHBoxLayout()
+        tool_row.setContentsMargins(0, 0, 0, 0)
+        tool_row.setSpacing(2)
+        for button in (
+            self.pan_tool_button,
+            self.zoom_tool_button,
+            self.circle_tool_button,
+            self.rect_tool_button,
+            self.ruler_tool_button,
+        ):
+            tool_row.addWidget(button)
+        tool_row.addWidget(QLabel("Result"))
+        self.tool_result_label.setMinimumWidth(120)
+        self.tool_result_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        tool_row.addWidget(self.tool_result_label, 1)
+        tool_row.addWidget(reset_button)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        layout.addLayout(tool_row)
+
+        frame = _frame("Tools")
+        frame.setLayout(layout)
+        return frame
 
     def _laser_frame(self) -> tuple[QGroupBox, list[QWidget]]:
         self.laser_status_label = QLabel("Set laser center.")
@@ -425,23 +491,6 @@ class MainWindow(QMainWindow):
             lambda value: self._on_radiation_profile_distance_changed()
         )
 
-        for spin in (self.circle_x_spin, self.circle_y_spin, self.circle_radius_spin):
-            spin.setRange(0.0, 1_000_000.0)
-            spin.setDecimals(1)
-            spin.setSingleStep(1.0)
-            spin.setMaximumWidth(64)
-        self.circle_x_spin.valueChanged.connect(lambda value: self._update_circle_overlay())
-        self.circle_y_spin.valueChanged.connect(lambda value: self._update_circle_overlay())
-        self.circle_radius_spin.valueChanged.connect(lambda value: self._update_circle_overlay())
-        self.circle_radius_spin.setValue(10.0)
-        self.circle_mean_label.setFixedWidth(60)
-        self.circle_mean_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.circle_mean_label.setText("")
-        circle_button = _button("Mean")
-        circle_button.setMaximumWidth(64)
-        circle_button.setToolTip("Calculate circle mean.")
-        circle_button.clicked.connect(self.calculate_circle_mean)
-
         settings_layout = QGridLayout()
         settings_layout.addWidget(QLabel("Film baseline px"), 0, 0)
         settings_layout.addWidget(self.film_pixel_spin, 0, 1)
@@ -497,6 +546,11 @@ class MainWindow(QMainWindow):
         profile_mode_stack.addWidget(manual_page)
         self.radiation_profile_mode_stack = profile_mode_stack
 
+        self.raw_profile_check.setChecked(True)
+        self.smoothed_profile_check.setChecked(True)
+        self.raw_profile_check.toggled.connect(lambda visible: self._update_profile_visibility())
+        self.smoothed_profile_check.toggled.connect(lambda visible: self._update_profile_visibility())
+
         layout = QVBoxLayout()
         layout.addWidget(self.radiation_status_label)
         layout.addLayout(profile_mode_row)
@@ -507,7 +561,6 @@ class MainWindow(QMainWindow):
         profile_toggle_layout.addWidget(self.smoothed_profile_check)
         profile_toggle_layout.addStretch(1)
         layout.addLayout(profile_toggle_layout)
-        layout.addWidget(self._circle_mean_frame(circle_button))
         layout.addWidget(reset_button)
 
         frame = _frame("Radiation")
@@ -524,7 +577,6 @@ class MainWindow(QMainWindow):
             manual_reset_button,
             self.raw_profile_check,
             self.smoothed_profile_check,
-            circle_button,
             reset_button,
         ]
 
@@ -586,45 +638,6 @@ class MainWindow(QMainWindow):
             visibility_layout.addWidget(check, index // 2, index % 2)
         frame = _frame("Options")
         frame.setLayout(visibility_layout)
-        return frame
-
-    def _circle_mean_frame(self, circle_button: QPushButton) -> QGroupBox:
-        self.raw_profile_check.setChecked(True)
-        self.smoothed_profile_check.setChecked(True)
-        self.raw_profile_check.toggled.connect(lambda visible: self._update_profile_visibility())
-        self.smoothed_profile_check.toggled.connect(lambda visible: self._update_profile_visibility())
-
-        circle_row = QHBoxLayout()
-        circle_row.setContentsMargins(0, 0, 0, 0)
-        circle_row.setSpacing(3)
-        circle_row.addStretch(1)
-        circle_row.addWidget(QLabel("X"))
-        circle_row.addWidget(self.circle_x_spin)
-        circle_row.addWidget(QLabel("Y"))
-        circle_row.addWidget(self.circle_y_spin)
-        circle_row.addWidget(QLabel("R"))
-        circle_row.addWidget(self.circle_radius_spin)
-        circle_row.addStretch(1)
-
-        circle_action_row = QHBoxLayout()
-        circle_action_row.setContentsMargins(0, 0, 0, 0)
-        circle_action_row.setSpacing(3)
-        circle_action_row.addStretch(1)
-        circle_action_row.addWidget(circle_button)
-        circle_action_row.addWidget(self.circle_mean_label)
-        circle_action_row.addStretch(1)
-
-        content = QWidget()
-        content_layout = QVBoxLayout()
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(0)
-        content_layout.addLayout(circle_row)
-        content_layout.addLayout(circle_action_row)
-        content.setLayout(content_layout)
-
-        frame, toggle = self._collapsible_section("Options", content, expanded=False)
-        toggle.toggled.connect(self._set_circle_options_visible)
-        self._set_circle_options_visible(False)
         return frame
 
     def _collapsible_section(self, title: str, content: QWidget, expanded: bool = False) -> tuple[QGroupBox, QToolButton]:
@@ -717,13 +730,16 @@ class MainWindow(QMainWindow):
             self.view.set_image(self.image)
             self._update_image_info()
             self._set_default_radiation_settings()
-            self._update_circle_overlay()
             self.laser_center = self._default_laser_center()
             self._set_laser_profile_lines()
             self._set_laser_profile_cursors()
             self.view.set_laser_center(self.laser_center)
             self.view.set_radiation_rect(None)
             self.view.set_light_rect(None)
+            self.view.set_circle_roi(None)
+            self.view.set_rect_roi(None)
+            self.view.set_ruler_points(None)
+            self._set_tool_mode("pan")
             self.completed_stages = set()
             self.path_edit.setText(str(path))
             self._save_settings()
@@ -744,18 +760,13 @@ class MainWindow(QMainWindow):
     def _set_default_radiation_settings(self) -> None:
         if self.image is None:
             return
-        height, width = self.image.shape[:2]
         minimum = float(np.min(self.image))
         maximum = float(np.max(self.image))
-        self.circle_x_spin.setMaximum(float(width - 1))
-        self.circle_y_spin.setMaximum(float(height - 1))
-        self.circle_x_spin.setValue((width - 1.0) / 2.0)
-        self.circle_y_spin.setValue((height - 1.0) / 2.0)
         self.film_pixel_spin.blockSignals(True)
         self.film_pixel_spin.setRange(minimum - abs(maximum - minimum) * 2.0 - 1.0, maximum + abs(maximum - minimum) * 2.0 + 1.0)
         self.film_pixel_spin.setValue(maximum)
         self.film_pixel_spin.blockSignals(False)
-        self.circle_mean_label.setText("")
+        self.tool_result_label.setText("")
 
     def _apply_default_dpi(self, path: Path) -> None:
         dpi = tiff_image_dpi(path)
@@ -873,6 +884,7 @@ class MainWindow(QMainWindow):
         self._save_settings()
         if self.current_stage == "radiation" and self.radiation_profile_mode == "auto":
             self._refresh_radiation_profile_lines()
+        self._on_ruler_changed(self.ruler_points)
         self._update_result_label()
 
     def _on_record_dpi_changed(self) -> None:
@@ -1353,24 +1365,85 @@ class MainWindow(QMainWindow):
         max_raw = float(np.max(raw_values)) if raw_values.size else 0.0
         return max_raw - smoothed, None, None
 
-    def _update_circle_overlay(self) -> None:
-        if self.image is None or not self.circle_options_visible:
-            self.view.set_circle_overlay(None, None)
+    def _set_tool_mode(self, mode: str | None) -> None:
+        if mode == self.tool_mode:
+            self._sync_tool_buttons(mode)
+            self.view.set_tool_mode(mode)
             return
-        self.view.set_circle_overlay(
-            Point(self.circle_x_spin.value(), self.circle_y_spin.value()),
-            self.circle_radius_spin.value(),
-        )
+        self._clear_measurement_tool_state()
+        self.tool_mode = mode
+        self._sync_tool_buttons(mode)
+        self.view.set_tool_mode(mode)
 
-    def _set_circle_options_visible(self, visible: bool) -> None:
-        self.circle_options_visible = visible
-        self._update_circle_overlay()
+    def _sync_tool_buttons(self, mode: str | None) -> None:
+        if not hasattr(self, "pan_tool_button"):
+            return
+        buttons = {
+            "pan": self.pan_tool_button,
+            "zoom": self.zoom_tool_button,
+            "circle": self.circle_tool_button,
+            "rect": self.rect_tool_button,
+            "ruler": self.ruler_tool_button,
+        }
+        for name, button in buttons.items():
+            button.blockSignals(True)
+            button.setChecked(name == mode)
+            button.blockSignals(False)
+
+    def _clear_measurement_tool_state(self) -> None:
+        self.circle_roi = None
+        self.rect_roi = None
+        self.ruler_points = None
+        self.tool_result_label.setText("")
+        self.view.set_circle_roi(None)
+        self.view.set_rect_roi(None)
+        self.view.set_ruler_points(None)
+
+    def _format_measurement(self, value: float | None, suffix: str = "") -> str:
+        if value is None:
+            return ""
+        return f"{value:.1f}{suffix}"
+
+    def _on_circle_roi_changed(self, roi: tuple[Point, float] | None) -> None:
+        self.circle_roi = roi
+        if self.image is None or roi is None or self.tool_mode != "circle":
+            self.tool_result_label.setText("")
+            return
+        try:
+            value = circular_region_mean(self.image, roi[0], roi[1])
+        except ValueError:
+            self.tool_result_label.setText("")
+            return
+        self.tool_result_label.setText(f"Circle: {self._format_measurement(value)}")
+
+    def _on_rect_roi_changed(self, roi: tuple[Point, Point] | None) -> None:
+        self.rect_roi = roi
+        if self.image is None or roi is None or self.tool_mode != "rect":
+            self.tool_result_label.setText("")
+            return
+        try:
+            value = rectangular_region_mean(self.image, roi[0], roi[1])
+        except ValueError:
+            self.tool_result_label.setText("")
+            return
+        self.tool_result_label.setText(f"Rect: {self._format_measurement(value)}")
+
+    def _on_ruler_changed(self, points: tuple[Point, Point] | None) -> None:
+        self.ruler_points = points
+        if self.image is None or points is None or self.tool_mode != "ruler":
+            self.tool_result_label.setText("")
+            return
+        dpi = self._effective_dpi()
+        length_px = hypot(points[1].x - points[0].x, points[1].y - points[0].y)
+        length_mm = length_px * 25.4 / dpi if dpi > 0 else length_px
+        self.tool_result_label.setText(f"Ruler: {self._format_measurement(length_mm, ' mm')}")
 
     def _redetect_radiation_lines(self) -> None:
         if self.current_stage != "radiation" or self.image is None:
             return
         self._auto_update_radiation_cursors(self.view.profile_lines(), set(self.view.profile_lines()))
         self._on_profile_lines_changed(self.view.profile_lines())
+        self._on_ruler_changed(self.ruler_points)
 
     def _update_radiation_auto_status(self) -> None:
         if self._auto_detection_failures:
@@ -1379,21 +1452,6 @@ class MainWindow(QMainWindow):
             return
         if self.current_stage == "radiation":
             self.status.showMessage("Radiation boundary points updated.")
-
-    def calculate_circle_mean(self) -> None:
-        if self.image is None:
-            QMessageBox.warning(self, "No image", "Load an image before calculating a circle mean.")
-            return
-        try:
-            value = circular_region_mean(
-                self.image,
-                Point(self.circle_x_spin.value(), self.circle_y_spin.value()),
-                self.circle_radius_spin.value(),
-            )
-        except ValueError as error:
-            QMessageBox.warning(self, "Circle mean failed", str(error))
-            return
-        self.circle_mean_label.setText(f"{value:.1f}")
 
     def _capture_radiation_points(self) -> None:
         lines = self.view.profile_lines()
@@ -1709,6 +1767,17 @@ def _button(text: str) -> QPushButton:
     return button
 
 
+def _icon_tool_button(filename: str, tooltip: str) -> QToolButton:
+    button = QToolButton()
+    button.setFocusPolicy(Qt.NoFocus)
+    button.setToolTip(tooltip)
+    button.setIcon(QIcon(str(TOOLS_ICON_DIR / filename)))
+    button.setIconSize(QSize(24, 24))
+    button.setFixedSize(QSize(32, 32))
+    button.setAutoRaise(True)
+    return button
+
+
 def _nav_button(text: str) -> QPushButton:
     button = _button(text)
     button.setMinimumWidth(96)
@@ -1718,11 +1787,11 @@ def _nav_button(text: str) -> QPushButton:
 
 
 def _group_style() -> str:
-    return "QGroupBox { background: #f3f3f3; border: 1px solid #b8b8b8; border-radius: 4px; margin-top: 8px; } QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
+    return "QGroupBox { background: #f3f3f3; border: 1px solid #b8b8b8; border-radius: 4px; margin-top: 18px; } QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
 
 
 def _selected_group_style() -> str:
-    return "QGroupBox { background: #dfe9f6; border: 1px solid #5f8fc4; border-radius: 4px; margin-top: 8px; } QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
+    return "QGroupBox { background: #dfe9f6; border: 1px solid #5f8fc4; border-radius: 4px; margin-top: 18px; } QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
 
 
 def _sort_profile(positions: np.ndarray, values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
