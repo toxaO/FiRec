@@ -1,4 +1,5 @@
 import sys
+from contextlib import contextmanager
 from math import atan2, degrees, hypot
 from pathlib import Path
 
@@ -63,6 +64,35 @@ PROFILE_POINT_NAMES = {
     "right": ("U1", "D1"),
 }
 
+SETTING_DEFAULTS = {
+    "analyse_dpi_mode": "image",
+    "analyse_manual_dpi": 72.0,
+    "radiation_boundary_percent": 50.0,
+    "radiation_range_mm": 20.0,
+    "radiation_smoothing_px": 5,
+    "radiation_profile_mode": "auto",
+    "radiation_profile_offset_mm": 40.0,
+    "radiation_show_raw": True,
+    "radiation_show_smoothed": True,
+    "analyse_result_origin": "laser",
+    "record_origin": "laser",
+    "record_dpi": 72.0,
+}
+
+DISPLAY_OPTION_KEYS = {
+    "Laser Center": "display_laser_center",
+    "Radiation Edge": "display_radiation_edge",
+    "Radiation Center": "display_radiation_center",
+    "Radiation Area": "display_radiation_area",
+    "Radiation Length": "display_radiation_length",
+    "Radiation Vertices": "display_radiation_vertices",
+    "Radiation boundary": "display_radiation_boundary",
+    "Light Edge": "display_light_edge",
+    "Light Center": "display_light_center",
+    "Light Length": "display_light_length",
+    "Light Vertices": "display_light_vertices",
+}
+
 TOOLS_ICON_DIR = Path(__file__).resolve().parent / "assets" / "icons" / "tools"
 
 
@@ -96,6 +126,7 @@ class MainWindow(QMainWindow):
         self.selected_profile_line: str | None = "bottom"
         self.tool_mode: str | None = "pan"
         self.settings = QSettings("FiRec", "FiRec")
+        self._settings_write_suppressed = 0
         self.connection = connect_database("firec.sqlite")
 
         self.view = ImageView()
@@ -150,6 +181,7 @@ class MainWindow(QMainWindow):
         self.stage_frames: dict[str, QGroupBox] = {}
         self.stage_controls: dict[str, list[QWidget]] = {}
         self.completed_stages: set[str] = set()
+        self.display_option_checks: dict[str, QCheckBox] = {}
 
         self.status = QStatusBar()
         self.setStatusBar(self.status)
@@ -280,7 +312,7 @@ class MainWindow(QMainWindow):
         self.record_origin_combo.addItem("Origin: Laser", "laser")
         self.record_origin_combo.addItem("Origin: Radiation", "radiation")
         self.record_origin_combo.addItem("Origin: Light", "light")
-        self.record_origin_combo.currentIndexChanged.connect(lambda index: self.refresh_results_table())
+        self.record_origin_combo.currentIndexChanged.connect(lambda index: self._on_record_origin_changed())
 
         self.record_dpi_spin.setRange(0.0, 10000.0)
         self.record_dpi_spin.setDecimals(1)
@@ -462,26 +494,26 @@ class MainWindow(QMainWindow):
         self.film_pixel_spin.setDecimals(1)
         self.film_pixel_spin.setSingleStep(100.0)
         self.film_pixel_spin.setToolTip("Raw pixel value for unirradiated film.")
-        self.film_pixel_spin.valueChanged.connect(lambda value: self._redetect_radiation_lines())
+        self.film_pixel_spin.valueChanged.connect(lambda value: self._on_radiation_setting_changed())
 
         self.radiation_threshold_spin.setRange(0.0, 100.0)
         self.radiation_threshold_spin.setDecimals(1)
         self.radiation_threshold_spin.setSingleStep(1.0)
         self.radiation_threshold_spin.setSuffix(" %")
         self.radiation_threshold_spin.setValue(50.0)
-        self.radiation_threshold_spin.valueChanged.connect(lambda value: self._redetect_radiation_lines())
+        self.radiation_threshold_spin.valueChanged.connect(lambda value: self._on_radiation_setting_changed())
 
         self.radiation_center_spin.setRange(1.0, 100.0)
         self.radiation_center_spin.setDecimals(1)
         self.radiation_center_spin.setSingleStep(1.0)
         self.radiation_center_spin.setSuffix(" mm")
         self.radiation_center_spin.setValue(20.0)
-        self.radiation_center_spin.valueChanged.connect(lambda value: self._redetect_radiation_lines())
+        self.radiation_center_spin.valueChanged.connect(lambda value: self._on_radiation_setting_changed())
 
         self.smoothing_window_spin.setRange(1, 501)
         self.smoothing_window_spin.setSingleStep(2)
         self.smoothing_window_spin.setValue(5)
-        self.smoothing_window_spin.valueChanged.connect(lambda value: self._redetect_radiation_lines())
+        self.smoothing_window_spin.valueChanged.connect(lambda value: self._on_radiation_setting_changed())
 
         self.radiation_profile_auto_radio = QRadioButton("Auto")
         self.radiation_profile_manual_radio = QRadioButton("Manual")
@@ -564,8 +596,8 @@ class MainWindow(QMainWindow):
 
         self.raw_profile_check.setChecked(True)
         self.smoothed_profile_check.setChecked(True)
-        self.raw_profile_check.toggled.connect(lambda visible: self._update_profile_visibility())
-        self.smoothed_profile_check.toggled.connect(lambda visible: self._update_profile_visibility())
+        self.raw_profile_check.toggled.connect(lambda visible: self._on_profile_visibility_changed())
+        self.smoothed_profile_check.toggled.connect(lambda visible: self._on_profile_visibility_changed())
 
         layout = QVBoxLayout()
         layout.addWidget(self.radiation_status_label)
@@ -616,7 +648,7 @@ class MainWindow(QMainWindow):
         self.origin_combo.addItem("Origin: Laser", "laser")
         self.origin_combo.addItem("Origin: Radiation", "radiation")
         self.origin_combo.addItem("Origin: Light", "light")
-        self.origin_combo.currentIndexChanged.connect(lambda index: self._update_result_label())
+        self.origin_combo.currentIndexChanged.connect(lambda index: self._on_result_origin_changed())
 
         controls = QHBoxLayout()
         controls.addStretch(1)
@@ -651,6 +683,10 @@ class MainWindow(QMainWindow):
             check = QCheckBox(label)
             check.setChecked(True)
             check.toggled.connect(callback)
+            check.toggled.connect(
+                lambda checked, label=label: self._on_display_option_changed(label, checked)
+            )
+            self.display_option_checks[label] = check
             visibility_layout.addWidget(check, index // 2, index % 2)
         frame = _frame("Options")
         frame.setLayout(visibility_layout)
@@ -778,10 +814,19 @@ class MainWindow(QMainWindow):
             return
         minimum = float(np.min(self.image))
         maximum = float(np.max(self.image))
-        self.film_pixel_spin.blockSignals(True)
-        self.film_pixel_spin.setRange(minimum - abs(maximum - minimum) * 2.0 - 1.0, maximum + abs(maximum - minimum) * 2.0 + 1.0)
-        self.film_pixel_spin.setValue(maximum)
-        self.film_pixel_spin.blockSignals(False)
+        current_value = float(self.film_pixel_spin.value())
+        span = abs(maximum - minimum) * 2.0 + 1.0
+        lower_bound = min(minimum - span, current_value)
+        upper_bound = max(maximum + span, current_value)
+        with self._suspend_settings_writes():
+            self.film_pixel_spin.blockSignals(True)
+            self.film_pixel_spin.setRange(
+                lower_bound,
+                upper_bound,
+            )
+            if not self.settings.contains("radiation_film_baseline_px"):
+                self.film_pixel_spin.setValue(maximum)
+            self.film_pixel_spin.blockSignals(False)
         self.tool_result_label.setText("")
 
     def _apply_default_dpi(self, path: Path) -> None:
@@ -832,6 +877,8 @@ class MainWindow(QMainWindow):
         self.dpi_spin.blockSignals(False)
 
     def _save_analyse_dpi_settings(self) -> None:
+        if self._settings_write_suppressed:
+            return
         self.settings.setValue("analyse_dpi_mode", self.analyse_dpi_mode)
         self.settings.setValue("analyse_manual_dpi", self.analyse_manual_dpi)
 
@@ -916,24 +963,54 @@ class MainWindow(QMainWindow):
         if self.current_stage == "radiation":
             self._refresh_radiation_profile_lines(force_manual_sync=mode == "manual" and not self._manual_radiation_profile_dirty)
             self._sync_radiation_step_ui()
+        self._save_radiation_settings()
 
     def _on_radiation_profile_distance_changed(self) -> None:
         self.radiation_profile_distance_mm = self.radiation_profile_distance_spin.value()
+        self._save_radiation_settings()
         if self.current_stage == "radiation" and self.radiation_profile_mode == "auto":
             self._refresh_radiation_profile_lines()
 
     def _restore_settings(self) -> None:
-        last_path = self.settings.value("last_image_path", "", str)
-        if last_path:
-            self.path_edit.setText(last_path)
-        legacy_dpi = float(self.settings.value("dpi", 72.0, float) or 72.0)
-        manual_dpi = float(self.settings.value("analyse_manual_dpi", legacy_dpi, float) or legacy_dpi)
-        self.analyse_manual_dpi = manual_dpi if manual_dpi > 0 else 72.0
-        mode = self.settings.value("analyse_dpi_mode", "image", str) or "image"
-        self.analyse_dpi_mode = mode if mode in ("image", "manual") else "image"
-        record_dpi = float(self.settings.value("record_dpi", legacy_dpi, float) or legacy_dpi)
-        self.record_dpi_spin.setValue(record_dpi if record_dpi > 0 else 72.0)
-        self._sync_analyse_dpi_ui()
+        with self._suspend_settings_writes():
+            last_path = self.settings.value("last_image_path", "", str)
+            if last_path:
+                self.path_edit.setText(last_path)
+            legacy_dpi = float(self.settings.value("dpi", 72.0, float) or 72.0)
+            manual_dpi = self._settings_float("analyse_manual_dpi", legacy_dpi)
+            self.analyse_manual_dpi = manual_dpi if manual_dpi > 0 else SETTING_DEFAULTS["analyse_manual_dpi"]
+            mode = self.settings.value("analyse_dpi_mode", SETTING_DEFAULTS["analyse_dpi_mode"], str) or SETTING_DEFAULTS["analyse_dpi_mode"]
+            self.analyse_dpi_mode = mode if mode in ("image", "manual") else SETTING_DEFAULTS["analyse_dpi_mode"]
+            self.dpi_spin.setValue(self.analyse_manual_dpi)
+
+            self.film_pixel_spin.setValue(self._settings_float("radiation_film_baseline_px", 0.0))
+            self.radiation_threshold_spin.setValue(self._settings_float("radiation_boundary_percent", SETTING_DEFAULTS["radiation_boundary_percent"]))
+            self.radiation_center_spin.setValue(self._settings_float("radiation_range_mm", SETTING_DEFAULTS["radiation_range_mm"]))
+            self.smoothing_window_spin.setValue(self._settings_int("radiation_smoothing_px", SETTING_DEFAULTS["radiation_smoothing_px"]))
+            self.radiation_profile_distance_mm = self._settings_float("radiation_profile_offset_mm", SETTING_DEFAULTS["radiation_profile_offset_mm"])
+            self.radiation_profile_distance_spin.setValue(self.radiation_profile_distance_mm)
+            self.raw_profile_check.setChecked(self._settings_bool("radiation_show_raw", SETTING_DEFAULTS["radiation_show_raw"]))
+            self.smoothed_profile_check.setChecked(self._settings_bool("radiation_show_smoothed", SETTING_DEFAULTS["radiation_show_smoothed"]))
+            self._set_radiation_profile_mode(
+                self._settings_choice("radiation_profile_mode", ("auto", "manual"), SETTING_DEFAULTS["radiation_profile_mode"]),
+                update_ui=True,
+            )
+
+            self._set_combo_data(
+                self.origin_combo,
+                self._settings_choice("analyse_result_origin", ("laser", "radiation", "light"), SETTING_DEFAULTS["analyse_result_origin"]),
+            )
+            self._set_combo_data(
+                self.record_origin_combo,
+                self._settings_choice("record_origin", ("laser", "radiation", "light"), SETTING_DEFAULTS["record_origin"]),
+            )
+            record_dpi = self._settings_float("record_dpi", legacy_dpi)
+            self.record_dpi_spin.setValue(record_dpi if record_dpi > 0 else SETTING_DEFAULTS["record_dpi"])
+            for label, check in self.display_option_checks.items():
+                key = DISPLAY_OPTION_KEYS[label]
+                check.setChecked(self._settings_bool(key, True))
+            self._sync_analyse_dpi_ui()
+            self._update_profile_visibility()
 
     def _save_settings(self) -> None:
         self.settings.setValue("last_image_path", self.path_edit.text().strip())
@@ -948,7 +1025,13 @@ class MainWindow(QMainWindow):
         self._on_analyse_dpi_updated()
 
     def _on_record_dpi_changed(self) -> None:
-        self.settings.setValue("record_dpi", self.record_dpi_spin.value())
+        if not self._settings_write_suppressed:
+            self.settings.setValue("record_dpi", self.record_dpi_spin.value())
+        self.refresh_results_table()
+
+    def _on_record_origin_changed(self) -> None:
+        if not self._settings_write_suppressed:
+            self.settings.setValue("record_origin", self.record_origin_combo.currentData() or "laser")
         self.refresh_results_table()
 
     def activate_stage(self, stage: str) -> None:
@@ -1147,20 +1230,21 @@ class MainWindow(QMainWindow):
         self._auto_detection_failures = {}
         self.manual_radiation_profile_lines = None
         self._manual_radiation_profile_dirty = False
-        self.radiation_profile_mode = "auto"
         self.view.set_radiation_points(self.radiation_points)
         self.view.set_radiation_rect(None)
         self.view.set_light_rect(None)
-        self._set_radiation_profile_mode("auto", update_ui=True)
+        with self._suspend_settings_writes():
+            self._set_radiation_profile_mode("auto", update_ui=True)
         if self.current_stage == "radiation":
             self._redetect_radiation_lines()
         self.status.showMessage("Reset radiation boundary detection.")
         self._update_result_label()
 
     def reset_radiation_profile_lines(self) -> None:
-        self.manual_radiation_profile_lines = self._auto_radiation_profile_positions()
-        self._manual_radiation_profile_dirty = False
-        self._set_radiation_profile_mode("manual", update_ui=True)
+        with self._suspend_settings_writes():
+            self.manual_radiation_profile_lines = self._auto_radiation_profile_positions()
+            self._manual_radiation_profile_dirty = False
+            self._set_radiation_profile_mode("manual", update_ui=True)
         self.status.showMessage("Reset radiation profile lines.")
 
     def reset_light_field(self) -> None:
@@ -1353,6 +1437,24 @@ class MainWindow(QMainWindow):
         for plot in self.profile_plots.values():
             plot.set_raw_profile_visible(raw_visible)
             plot.set_smoothed_profile_visible(smoothed_visible)
+
+    def _on_profile_visibility_changed(self) -> None:
+        self._save_radiation_settings()
+        self._update_profile_visibility()
+
+    def _on_display_option_changed(self, label: str, checked: bool) -> None:
+        if self._settings_write_suppressed:
+            return
+        self.settings.setValue(DISPLAY_OPTION_KEYS[label], checked)
+
+    def _on_radiation_setting_changed(self) -> None:
+        self._save_radiation_settings()
+        self._redetect_radiation_lines()
+
+    def _on_result_origin_changed(self) -> None:
+        if not self._settings_write_suppressed:
+            self.settings.setValue("analyse_result_origin", self.origin_combo.currentData() or "laser")
+        self._update_result_label()
 
     def _changed_profile_lines(self, lines: dict[str, tuple[Point, Point]]) -> set[str]:
         if not self._last_profile_lines:
@@ -1736,6 +1838,44 @@ class MainWindow(QMainWindow):
             frame.setStyleSheet(_selected_group_style() if selected else _group_style())
             for control in self.stage_controls[stage]:
                 control.setEnabled(selected)
+
+    @contextmanager
+    def _suspend_settings_writes(self):
+        self._settings_write_suppressed += 1
+        try:
+            yield
+        finally:
+            self._settings_write_suppressed -= 1
+
+    def _settings_float(self, key: str, default: float) -> float:
+        return float(self.settings.value(key, default, float) or default)
+
+    def _settings_int(self, key: str, default: int) -> int:
+        return int(self.settings.value(key, default, int) or default)
+
+    def _settings_bool(self, key: str, default: bool) -> bool:
+        return bool(self.settings.value(key, default, bool))
+
+    def _settings_choice(self, key: str, allowed: tuple[str, ...], default: str) -> str:
+        value = self.settings.value(key, default, str) or default
+        return value if value in allowed else default
+
+    def _set_combo_data(self, combo: QComboBox, value: str) -> None:
+        index = combo.findData(value)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+
+    def _save_radiation_settings(self) -> None:
+        if self._settings_write_suppressed:
+            return
+        self.settings.setValue("radiation_film_baseline_px", self.film_pixel_spin.value())
+        self.settings.setValue("radiation_boundary_percent", self.radiation_threshold_spin.value())
+        self.settings.setValue("radiation_range_mm", self.radiation_center_spin.value())
+        self.settings.setValue("radiation_smoothing_px", self.smoothing_window_spin.value())
+        self.settings.setValue("radiation_profile_mode", self.radiation_profile_mode)
+        self.settings.setValue("radiation_profile_offset_mm", self.radiation_profile_distance_spin.value())
+        self.settings.setValue("radiation_show_raw", self.raw_profile_check.isChecked())
+        self.settings.setValue("radiation_show_smoothed", self.smoothed_profile_check.isChecked())
 
 
 def _radiation_polygon_from_points(points: dict[str, Point]) -> tuple[Point, Point, Point, Point] | None:
