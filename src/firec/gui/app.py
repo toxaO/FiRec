@@ -90,7 +90,9 @@ class MainWindow(QMainWindow):
         self.manual_radiation_profile_lines: dict[str, float] | None = None
         self._manual_radiation_profile_dirty = False
         self._applying_radiation_profile_lines = False
-        self._loaded_image_default_dpi = 72.0
+        self._loaded_image_dpi = 0.0
+        self.analyse_dpi_mode = "image"
+        self.analyse_manual_dpi = 72.0
         self.selected_profile_line: str | None = "bottom"
         self.tool_mode: str | None = "pan"
         self.settings = QSettings("FiRec", "FiRec")
@@ -111,6 +113,8 @@ class MainWindow(QMainWindow):
         self.path_edit = QLineEdit()
         self.image_info_label = QLabel("No image")
         self.dpi_spin = QDoubleSpinBox()
+        self.analyse_dpi_image_radio = QRadioButton("Image")
+        self.analyse_dpi_manual_radio = QRadioButton("Manual")
         self.origin_combo = QComboBox()
         self.record_origin_combo = QComboBox()
         self.record_dpi_spin = QDoubleSpinBox()
@@ -317,6 +321,16 @@ class MainWindow(QMainWindow):
         browse_button = _button("Browse")
         browse_button.clicked.connect(self.browse_image_path)
 
+        self.analyse_dpi_group = QButtonGroup(self)
+        self.analyse_dpi_group.addButton(self.analyse_dpi_image_radio)
+        self.analyse_dpi_group.addButton(self.analyse_dpi_manual_radio)
+        self.analyse_dpi_image_radio.toggled.connect(
+            lambda checked: checked and self._set_analyse_dpi_mode("image")
+        )
+        self.analyse_dpi_manual_radio.toggled.connect(
+            lambda checked: checked and self._set_analyse_dpi_mode("manual")
+        )
+
         self.dpi_spin.setRange(0.0, 10000.0)
         self.dpi_spin.setDecimals(1)
         self.dpi_spin.setSingleStep(1.0)
@@ -337,6 +351,8 @@ class MainWindow(QMainWindow):
         bottom_row = QHBoxLayout()
         bottom_row.addWidget(self.image_info_label, 1)
         bottom_row.addWidget(QLabel("DPI"))
+        bottom_row.addWidget(self.analyse_dpi_image_radio)
+        bottom_row.addWidget(self.analyse_dpi_manual_radio)
         bottom_row.addWidget(self.dpi_spin)
 
         layout = QVBoxLayout()
@@ -770,22 +786,60 @@ class MainWindow(QMainWindow):
 
     def _apply_default_dpi(self, path: Path) -> None:
         dpi = tiff_image_dpi(path)
-        if dpi is None or dpi <= 0:
-            previous = float(self.settings.value("dpi", 0.0, float) or 0.0)
-            dpi = previous if previous > 0 else 72.0
-        self._loaded_image_default_dpi = float(dpi)
-        for spin in (self.dpi_spin, self.record_dpi_spin):
-            spin.blockSignals(True)
-            spin.setValue(float(dpi))
-            spin.blockSignals(False)
+        self._loaded_image_dpi = float(dpi) if dpi is not None and dpi > 0 else 0.0
+        self._sync_analyse_dpi_ui()
 
     def _effective_dpi(self) -> float:
-        dpi = self.dpi_spin.value()
-        if dpi > 0:
-            return float(dpi)
-        if self._loaded_image_default_dpi > 0:
-            return float(self._loaded_image_default_dpi)
+        if self.analyse_dpi_mode == "manual" and self.analyse_manual_dpi > 0:
+            return float(self.analyse_manual_dpi)
+        if self._loaded_image_dpi > 0:
+            return float(self._loaded_image_dpi)
+        if self.analyse_manual_dpi > 0:
+            return float(self.analyse_manual_dpi)
         return 72.0
+
+    def _set_analyse_dpi_mode(self, mode: str) -> None:
+        if mode not in ("image", "manual") or mode == self.analyse_dpi_mode:
+            self._sync_analyse_dpi_ui()
+            return
+        self.analyse_dpi_mode = mode
+        self._save_analyse_dpi_settings()
+        self._sync_analyse_dpi_ui()
+        self._on_analyse_dpi_updated()
+
+    def _sync_analyse_dpi_ui(self) -> None:
+        if not hasattr(self, "analyse_dpi_image_radio"):
+            return
+        self.analyse_dpi_image_radio.blockSignals(True)
+        self.analyse_dpi_manual_radio.blockSignals(True)
+        self.analyse_dpi_image_radio.setChecked(self.analyse_dpi_mode == "image")
+        self.analyse_dpi_manual_radio.setChecked(self.analyse_dpi_mode == "manual")
+        self.analyse_dpi_image_radio.blockSignals(False)
+        self.analyse_dpi_manual_radio.blockSignals(False)
+
+        self.dpi_spin.blockSignals(True)
+        if self.analyse_dpi_mode == "manual":
+            self.dpi_spin.setEnabled(True)
+            self.dpi_spin.setValue(float(self.analyse_manual_dpi))
+            self.dpi_spin.setToolTip("Manual DPI used for analysis.")
+        else:
+            self.dpi_spin.setEnabled(False)
+            self.dpi_spin.setValue(float(self._effective_dpi()))
+            if self._loaded_image_dpi > 0:
+                self.dpi_spin.setToolTip("DPI from image metadata.")
+            else:
+                self.dpi_spin.setToolTip("Image DPI unavailable. Falling back to the previous manual DPI.")
+        self.dpi_spin.blockSignals(False)
+
+    def _save_analyse_dpi_settings(self) -> None:
+        self.settings.setValue("analyse_dpi_mode", self.analyse_dpi_mode)
+        self.settings.setValue("analyse_manual_dpi", self.analyse_manual_dpi)
+
+    def _on_analyse_dpi_updated(self) -> None:
+        if self.current_stage == "radiation" and self.radiation_profile_mode == "auto":
+            self._refresh_radiation_profile_lines()
+        self._on_ruler_changed(self.ruler_points)
+        self._update_result_label()
 
     def _auto_radiation_profile_positions(self) -> dict[str, float] | None:
         if self.image is None:
@@ -872,23 +926,29 @@ class MainWindow(QMainWindow):
         last_path = self.settings.value("last_image_path", "", str)
         if last_path:
             self.path_edit.setText(last_path)
-        dpi = self.settings.value("dpi", 0.0, float)
-        self.dpi_spin.setValue(float(dpi or 0.0))
-        self.record_dpi_spin.setValue(float(dpi or 0.0))
+        legacy_dpi = float(self.settings.value("dpi", 72.0, float) or 72.0)
+        manual_dpi = float(self.settings.value("analyse_manual_dpi", legacy_dpi, float) or legacy_dpi)
+        self.analyse_manual_dpi = manual_dpi if manual_dpi > 0 else 72.0
+        mode = self.settings.value("analyse_dpi_mode", "image", str) or "image"
+        self.analyse_dpi_mode = mode if mode in ("image", "manual") else "image"
+        record_dpi = float(self.settings.value("record_dpi", legacy_dpi, float) or legacy_dpi)
+        self.record_dpi_spin.setValue(record_dpi if record_dpi > 0 else 72.0)
+        self._sync_analyse_dpi_ui()
 
     def _save_settings(self) -> None:
         self.settings.setValue("last_image_path", self.path_edit.text().strip())
-        self.settings.setValue("dpi", self.dpi_spin.value())
+        self._save_analyse_dpi_settings()
 
     def _on_dpi_changed(self) -> None:
-        self._save_settings()
-        if self.current_stage == "radiation" and self.radiation_profile_mode == "auto":
-            self._refresh_radiation_profile_lines()
-        self._on_ruler_changed(self.ruler_points)
-        self._update_result_label()
+        if self.analyse_dpi_mode != "manual":
+            self._sync_analyse_dpi_ui()
+            return
+        self.analyse_manual_dpi = float(self.dpi_spin.value()) if self.dpi_spin.value() > 0 else 72.0
+        self._save_analyse_dpi_settings()
+        self._on_analyse_dpi_updated()
 
     def _on_record_dpi_changed(self) -> None:
-        self.settings.setValue("dpi", self.record_dpi_spin.value())
+        self.settings.setValue("record_dpi", self.record_dpi_spin.value())
         self.refresh_results_table()
 
     def activate_stage(self, stage: str) -> None:
@@ -1643,7 +1703,7 @@ class MainWindow(QMainWindow):
             dpi = 0.0
         else:
             origin_point = self.laser_center if selected_origin == "laser" else None
-            dpi = self.dpi_spin.value()
+            dpi = self._effective_dpi()
         return compare_field_polygons(
             radiation_polygon,
             light_polygon,
