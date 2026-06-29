@@ -9,7 +9,11 @@ from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
 
 from firec.gui import app as app_module
+from firec.core.analysis import compare_field_polygons
+from firec.core.geometry import Point, RotatedRect
 from firec.storage.repository import connect_database
+from firec.storage.repository import fetch_analysis_rows
+from firec.storage.repository import save_analysis
 
 
 @pytest.fixture
@@ -58,8 +62,6 @@ def test_main_window_restores_user_settings(qapp, isolated_settings):
     window.raw_profile_check.setChecked(False)
     window.smoothed_profile_check.setChecked(False)
     window.origin_combo.setCurrentIndex(window.origin_combo.findData("light"))
-    window.record_origin_combo.setCurrentIndex(window.record_origin_combo.findData("radiation"))
-    window.record_dpi_spin.setValue(144.0)
     window.display_option_checks["Radiation Center"].setChecked(False)
     window.display_option_checks["Light Edge"].setChecked(False)
     window.settings.sync()
@@ -78,8 +80,6 @@ def test_main_window_restores_user_settings(qapp, isolated_settings):
     assert restored.raw_profile_check.isChecked() is False
     assert restored.smoothed_profile_check.isChecked() is False
     assert restored.origin_combo.currentData() == "light"
-    assert restored.record_origin_combo.currentData() == "radiation"
-    assert restored.record_dpi_spin.value() == 144.0
     assert restored.display_option_checks["Radiation Center"].isChecked() is False
     assert restored.display_option_checks["Light Edge"].isChecked() is False
 
@@ -100,6 +100,40 @@ def test_reset_radiation_field_does_not_overwrite_saved_defaults(qapp, isolated_
 
     assert restored.radiation_profile_mode == "manual"
     assert restored.radiation_threshold_spin.value() == 37.0
+
+
+def test_record_rows_edit_origin_and_dpi_independently(qapp, isolated_settings):
+    window = _make_window(qapp)
+    radiation = RotatedRect(Point(10, 10), width=20, height=30, angle=0)
+    light = RotatedRect(Point(11, 12), width=25, height=35, angle=0)
+    result = compare_field_polygons(
+        radiation.ordered_points(),
+        light.ordered_points(),
+        origin_field="laser",
+        origin_point=Point(0, 0),
+    )
+    save_analysis(window.connection, "image.tif", result, "laser", 0.0)
+
+    window.refresh_results_table()
+
+    origin_widget = window.results_table.cellWidget(0, 2)
+    assert origin_widget is not None
+    origin_widget.setCurrentIndex(origin_widget.findData("radiation"))
+
+    rows = fetch_analysis_rows(window.connection)
+    assert rows[0]["origin"] == "radiation"
+    assert window.results_table.item(0, 7).text() == "0.0"
+    assert window.results_table.item(0, 5).text() == "-10.0"
+
+    dpi_widget = window.results_table.cellWidget(0, 3)
+    assert dpi_widget is not None
+    dpi_widget.setValue(254.0)
+
+    rows = fetch_analysis_rows(window.connection)
+    assert rows[0]["dpi"] == 254.0
+    assert window.results_table.item(0, 4).text() == "mm"
+    assert window.results_table.item(0, 5).text() == "-1.0"
+    assert window.results_table.item(0, 7).text() == "0.0"
 
 
 def test_film_baseline_uses_saved_value_across_images(qapp, isolated_settings, monkeypatch, tmp_path):

@@ -54,7 +54,14 @@ from firec.core.analysis import (
 from firec.core.geometry import Point, RotatedRect
 from firec.gui.image_view import ImageView
 from firec.gui.profile_plot import ProfilePlot
-from firec.storage.repository import connect_database, delete_analysis, export_rows_to_csv, fetch_analysis_rows, save_analysis
+from firec.storage.repository import (
+    connect_database,
+    delete_analysis,
+    export_rows_to_csv,
+    fetch_analysis_rows,
+    save_analysis,
+    update_analysis_record,
+)
 
 
 PROFILE_POINT_NAMES = {
@@ -75,8 +82,6 @@ SETTING_DEFAULTS = {
     "radiation_show_raw": True,
     "radiation_show_smoothed": True,
     "analyse_result_origin": "laser",
-    "record_origin": "laser",
-    "record_dpi": 72.0,
 }
 
 DISPLAY_OPTION_KEYS = {
@@ -147,8 +152,6 @@ class MainWindow(QMainWindow):
         self.analyse_dpi_image_radio = QRadioButton("Image")
         self.analyse_dpi_manual_radio = QRadioButton("Manual")
         self.origin_combo = QComboBox()
-        self.record_origin_combo = QComboBox()
-        self.record_dpi_spin = QDoubleSpinBox()
         self.film_pixel_spin = QDoubleSpinBox()
         self.radiation_threshold_spin = QDoubleSpinBox()
         self.radiation_center_spin = QDoubleSpinBox()
@@ -176,6 +179,7 @@ class MainWindow(QMainWindow):
         self.result_tree.setHeaderLabels(["Item", "Value"])
         self.result_tree.setMinimumHeight(260)
         self.results_table = QTableWidget()
+        self.results_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.result_row_ids: list[int] = []
         self.current_stage = "laser"
         self.stage_frames: dict[str, QGroupBox] = {}
@@ -309,19 +313,6 @@ class MainWindow(QMainWindow):
         return widget
 
     def _record_tab(self) -> QWidget:
-        self.record_origin_combo.addItem("Origin: Laser", "laser")
-        self.record_origin_combo.addItem("Origin: Radiation", "radiation")
-        self.record_origin_combo.addItem("Origin: Light", "light")
-        self.record_origin_combo.currentIndexChanged.connect(lambda index: self._on_record_origin_changed())
-
-        self.record_dpi_spin.setRange(0.0, 10000.0)
-        self.record_dpi_spin.setDecimals(1)
-        self.record_dpi_spin.setSingleStep(1.0)
-        self.record_dpi_spin.setSpecialValueText("px")
-        self.record_dpi_spin.setSuffix(" dpi")
-        self.record_dpi_spin.setMaximumWidth(110)
-        self.record_dpi_spin.valueChanged.connect(lambda value: self._on_record_dpi_changed())
-
         refresh_button = _button("Refresh")
         refresh_button.clicked.connect(self.refresh_results_table)
         export_button = _button("Export CSV")
@@ -333,9 +324,6 @@ class MainWindow(QMainWindow):
         self.results_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
 
         controls = QHBoxLayout()
-        controls.addWidget(self.record_origin_combo)
-        controls.addWidget(QLabel("DPI"))
-        controls.addWidget(self.record_dpi_spin)
         controls.addWidget(export_button)
         controls.addWidget(delete_button)
         controls.addWidget(refresh_button)
@@ -976,8 +964,7 @@ class MainWindow(QMainWindow):
             last_path = self.settings.value("last_image_path", "", str)
             if last_path:
                 self.path_edit.setText(last_path)
-            legacy_dpi = float(self.settings.value("dpi", 72.0, float) or 72.0)
-            manual_dpi = self._settings_float("analyse_manual_dpi", legacy_dpi)
+            manual_dpi = self._settings_float("analyse_manual_dpi", SETTING_DEFAULTS["analyse_manual_dpi"])
             self.analyse_manual_dpi = manual_dpi if manual_dpi > 0 else SETTING_DEFAULTS["analyse_manual_dpi"]
             mode = self.settings.value("analyse_dpi_mode", SETTING_DEFAULTS["analyse_dpi_mode"], str) or SETTING_DEFAULTS["analyse_dpi_mode"]
             self.analyse_dpi_mode = mode if mode in ("image", "manual") else SETTING_DEFAULTS["analyse_dpi_mode"]
@@ -1000,12 +987,6 @@ class MainWindow(QMainWindow):
                 self.origin_combo,
                 self._settings_choice("analyse_result_origin", ("laser", "radiation", "light"), SETTING_DEFAULTS["analyse_result_origin"]),
             )
-            self._set_combo_data(
-                self.record_origin_combo,
-                self._settings_choice("record_origin", ("laser", "radiation", "light"), SETTING_DEFAULTS["record_origin"]),
-            )
-            record_dpi = self._settings_float("record_dpi", legacy_dpi)
-            self.record_dpi_spin.setValue(record_dpi if record_dpi > 0 else SETTING_DEFAULTS["record_dpi"])
             for label, check in self.display_option_checks.items():
                 key = DISPLAY_OPTION_KEYS[label]
                 check.setChecked(self._settings_bool(key, True))
@@ -1023,16 +1004,6 @@ class MainWindow(QMainWindow):
         self.analyse_manual_dpi = float(self.dpi_spin.value()) if self.dpi_spin.value() > 0 else 72.0
         self._save_analyse_dpi_settings()
         self._on_analyse_dpi_updated()
-
-    def _on_record_dpi_changed(self) -> None:
-        if not self._settings_write_suppressed:
-            self.settings.setValue("record_dpi", self.record_dpi_spin.value())
-        self.refresh_results_table()
-
-    def _on_record_origin_changed(self) -> None:
-        if not self._settings_write_suppressed:
-            self.settings.setValue("record_origin", self.record_origin_combo.currentData() or "laser")
-        self.refresh_results_table()
 
     def activate_stage(self, stage: str) -> None:
         self.current_stage = stage
@@ -1288,11 +1259,17 @@ class MainWindow(QMainWindow):
         if self.image_path is None or self.radiation_rect is None or self.light_rect is None:
             QMessageBox.warning(self, "Cannot save", "Set both rectangles before saving.")
             return
-        result = self._current_analysis_result("laser", raw_pixels=True)
-        if result is None:
+        raw_result = self._current_analysis_result("laser", raw_pixels=True)
+        if raw_result is None:
             QMessageBox.warning(self, "Cannot save", "Set both rectangles before saving.")
             return
-        save_analysis(self.connection, self.image_path, result)
+        save_analysis(
+            self.connection,
+            self.image_path,
+            raw_result,
+            self.origin_combo.currentData() or "laser",
+            self._effective_dpi(),
+        )
         self.refresh_results_table()
         self.status.showMessage("Saved analysis result.")
 
@@ -1323,6 +1300,9 @@ class MainWindow(QMainWindow):
         self.status.showMessage(f"Deleted {len(selected_rows)} record(s).")
 
     def refresh_results_table(self) -> None:
+        self.results_table.blockSignals(True)
+        self.results_table.setSortingEnabled(False)
+        self.results_table.clearContents()
         raw_rows = fetch_analysis_rows(self.connection)
         rows = self._display_record_rows(raw_rows)
         columns = [
@@ -1349,13 +1329,15 @@ class MainWindow(QMainWindow):
         for row_index, row in enumerate(rows):
             for column_index, column in enumerate(columns):
                 value = row.get(column, "")
+                if column in ("origin", "dpi"):
+                    continue
                 self.results_table.setItem(row_index, column_index, QTableWidgetItem(str(value)))
+            self._set_record_row_controls(row_index, int(raw_rows[row_index]["id"]), raw_rows[row_index])
         self.results_table.resizeColumnsToContents()
+        self.results_table.blockSignals(False)
 
     def _display_record_rows(self, rows: list[dict[str, object]]) -> list[dict[str, object]]:
-        origin = self.record_origin_combo.currentData() or "laser"
-        dpi = self.record_dpi_spin.value()
-        return [_record_display_row(row, origin, dpi) for row in rows]
+        return [_record_display_row(row) for row in rows]
 
     def _on_main_tab_changed(self, index: int) -> None:
         if index == 1:
@@ -1455,6 +1437,58 @@ class MainWindow(QMainWindow):
         if not self._settings_write_suppressed:
             self.settings.setValue("analyse_result_origin", self.origin_combo.currentData() or "laser")
         self._update_result_label()
+
+    def _set_record_row_controls(self, row_index: int, analysis_id: int, row: dict[str, object]) -> None:
+        origin_widget = QComboBox()
+        origin_widget.addItem("laser", "laser")
+        origin_widget.addItem("radiation", "radiation")
+        origin_widget.addItem("light", "light")
+        origin_widget.setMaximumWidth(110)
+        origin_widget.blockSignals(True)
+        self._set_combo_data(origin_widget, str(row["origin"]))
+        origin_widget.blockSignals(False)
+        origin_widget.currentIndexChanged.connect(
+            lambda index, analysis_id=analysis_id, origin_widget=origin_widget, dpi_widget_ref=row_index: self._on_record_metadata_changed(
+                analysis_id,
+                str(origin_widget.currentData() or "laser"),
+                self._record_dpi_from_widget(dpi_widget_ref),
+            )
+        )
+        self.results_table.setCellWidget(row_index, 2, origin_widget)
+
+        dpi_widget = QDoubleSpinBox()
+        dpi_widget.setRange(0.0, 10000.0)
+        dpi_widget.setDecimals(1)
+        dpi_widget.setSingleStep(1.0)
+        dpi_widget.setSpecialValueText("px")
+        dpi_widget.setMaximumWidth(110)
+        dpi_widget.blockSignals(True)
+        dpi_widget.setValue(float(row["dpi"]))
+        dpi_widget.blockSignals(False)
+        dpi_widget.valueChanged.connect(
+            lambda value, analysis_id=analysis_id, origin_widget_ref=row_index, dpi_widget=dpi_widget: self._on_record_metadata_changed(
+                analysis_id,
+                self._record_origin_from_widget(origin_widget_ref),
+                float(dpi_widget.value()),
+            )
+        )
+        self.results_table.setCellWidget(row_index, 3, dpi_widget)
+
+    def _record_origin_from_widget(self, row_index: int) -> str:
+        widget = self.results_table.cellWidget(row_index, 2)
+        if isinstance(widget, QComboBox):
+            return str(widget.currentData() or "laser")
+        return "laser"
+
+    def _record_dpi_from_widget(self, row_index: int) -> float:
+        widget = self.results_table.cellWidget(row_index, 3)
+        if isinstance(widget, QDoubleSpinBox):
+            return float(widget.value())
+        return 0.0
+
+    def _on_record_metadata_changed(self, analysis_id: int, origin: str, dpi: float) -> None:
+        update_analysis_record(self.connection, analysis_id, origin, dpi)
+        self.refresh_results_table()
 
     def _changed_profile_lines(self, lines: dict[str, tuple[Point, Point]]) -> set[str]:
         if not self._last_profile_lines:
@@ -1924,7 +1958,9 @@ def _stage_names() -> tuple[str, str, str, str]:
     return ("laser", "radiation", "light", "result")
 
 
-def _record_display_row(row: dict[str, object], origin: str, dpi: float) -> dict[str, object]:
+def _record_display_row(row: dict[str, object]) -> dict[str, object]:
+    origin = str(row["origin"])
+    dpi = float(row["dpi"])
     scale = 25.4 / dpi if dpi > 0 else 1.0
     unit = "mm" if dpi > 0 else "px"
     laser = Point(float(row["laser_center_x_px"]), float(row["laser_center_y_px"]))

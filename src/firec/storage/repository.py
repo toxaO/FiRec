@@ -9,7 +9,8 @@ from firec.core.analysis import AnalysisResult
 ANALYSES_COLUMNS = [
     "created_at",
     "image_path",
-    "source_dpi",
+    "origin",
+    "dpi",
     "laser_center_x_px",
     "laser_center_y_px",
     "radiation_center_x_px",
@@ -37,7 +38,8 @@ def initialize_database(connection: sqlite3.Connection) -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             created_at TEXT NOT NULL,
             image_path TEXT NOT NULL,
-            source_dpi REAL NOT NULL DEFAULT 0,
+            origin TEXT NOT NULL,
+            dpi REAL NOT NULL DEFAULT 0,
             laser_center_x_px REAL NOT NULL,
             laser_center_y_px REAL NOT NULL,
             radiation_center_x_px REAL NOT NULL,
@@ -54,13 +56,20 @@ def initialize_database(connection: sqlite3.Connection) -> None:
     connection.commit()
 
 
-def save_analysis(connection: sqlite3.Connection, image_path: str | Path, result: AnalysisResult) -> None:
+def save_analysis(
+    connection: sqlite3.Connection,
+    image_path: str | Path,
+    result: AnalysisResult,
+    origin: str,
+    dpi: float,
+) -> None:
     connection.execute(
         """
         INSERT INTO analyses (
             created_at,
             image_path,
-            source_dpi,
+            origin,
+            dpi,
             laser_center_x_px,
             laser_center_y_px,
             radiation_center_x_px,
@@ -71,12 +80,13 @@ def save_analysis(connection: sqlite3.Connection, image_path: str | Path, result
             radiation_edge_length_y_px,
             radiation_area_px2,
             light_area_px2
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             datetime.now().isoformat(timespec="seconds"),
             Path(image_path).name,
-            _round1(result.dpi),
+            origin,
+            _round1(dpi),
             _round1(result.laser_center.x if result.laser_center is not None else 0.0),
             _round1(result.laser_center.y if result.laser_center is not None else 0.0),
             _round1(result.radiation_field.center.x),
@@ -99,7 +109,8 @@ def fetch_analysis_rows(connection: sqlite3.Connection) -> list[dict[str, object
             id,
             created_at,
             image_path,
-            source_dpi,
+            origin,
+            dpi,
             laser_center_x_px,
             laser_center_y_px,
             radiation_center_x_px,
@@ -111,11 +122,23 @@ def fetch_analysis_rows(connection: sqlite3.Connection) -> list[dict[str, object
             radiation_area_px2,
             light_area_px2
         FROM analyses
-        ORDER BY created_at
+        ORDER BY id
         """
     )
     columns = [description[0] for description in cursor.description]
     return [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
+
+
+def update_analysis_record(connection: sqlite3.Connection, analysis_id: int, origin: str, dpi: float) -> None:
+    connection.execute(
+        """
+        UPDATE analyses
+        SET origin = ?, dpi = ?
+        WHERE id = ?
+        """,
+        (origin, _round1(dpi), analysis_id),
+    )
+    connection.commit()
 
 
 def delete_analysis(connection: sqlite3.Connection, analysis_id: int) -> None:

@@ -171,12 +171,13 @@ def test_save_and_fetch_analysis(tmp_path):
         origin_point=Point(0, 0),
     )
 
-    save_analysis(connection, "image.tif", result)
+    save_analysis(connection, "image.tif", result, "laser", 0.0)
     rows = fetch_analysis_rows(connection)
 
     assert len(rows) == 1
     assert rows[0]["image_path"] == "image.tif"
-    assert rows[0]["source_dpi"] == 0
+    assert rows[0]["origin"] == "laser"
+    assert rows[0]["dpi"] == 0.0
     assert rows[0]["laser_center_x_px"] == 0
     assert rows[0]["laser_center_y_px"] == 0
     assert rows[0]["radiation_center_x_px"] == 10
@@ -192,7 +193,8 @@ def test_record_display_row_converts_origin_and_dpi():
     row = {
         "created_at": "2026-01-01T00:00:00",
         "image_path": "image.tif",
-        "source_dpi": 0.0,
+        "origin": "light",
+        "dpi": 254.0,
         "laser_center_x_px": 0.0,
         "laser_center_y_px": 0.0,
         "radiation_center_x_px": 10.0,
@@ -205,7 +207,7 @@ def test_record_display_row_converts_origin_and_dpi():
         "light_area_px2": 2400.0,
     }
 
-    display = _record_display_row(row, "light", 254.0)
+    display = _record_display_row(row)
 
     assert display["origin"] == "light"
     assert display["unit"] == "mm"
@@ -232,8 +234,8 @@ def test_delete_analysis_removes_selected_row(tmp_path):
         origin_field="laser",
         origin_point=Point(0, 0),
     )
-    save_analysis(connection, "first.tif", result)
-    save_analysis(connection, "second.tif", result)
+    save_analysis(connection, "first.tif", result, "laser", 0.0)
+    save_analysis(connection, "second.tif", result, "laser", 0.0)
     first_id = int(fetch_analysis_rows(connection)[0]["id"])
 
     delete_analysis(connection, first_id)
@@ -317,5 +319,7 @@ def test_connect_database_replaces_outdated_schema(tmp_path):
     columns = {row[1] for row in connection.execute("PRAGMA table_info(analyses)")}
 
     assert "radiation_width" not in columns
+    assert "origin" in columns
+    assert "dpi" in columns
     assert "radiation_edge_length_x_px" in columns
     assert "light_area_px2" in columns
