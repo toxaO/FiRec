@@ -129,7 +129,7 @@ class MainWindow(QMainWindow):
         self.analyse_dpi_mode = "image"
         self.analyse_manual_dpi = 72.0
         self.selected_profile_line: str | None = "bottom"
-        self.tool_mode: str | None = "pan"
+        self.tool_mode: str | None = None
         self.settings = QSettings("FiRec", "FiRec")
         self._settings_write_suppressed = 0
         self.connection = connect_database("firec.sqlite")
@@ -191,7 +191,7 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status)
 
         self._build_layout()
-        self._set_tool_mode("pan")
+        self._set_tool_mode(None)
         self._restore_settings()
         self.view.set_editing_enabled(False)
         self._update_profile_visibility()
@@ -779,7 +779,7 @@ class MainWindow(QMainWindow):
             self.view.set_circle_roi(None)
             self.view.set_rect_roi(None)
             self.view.set_ruler_points(None)
-            self._set_tool_mode("pan")
+            self._set_tool_mode(None)
             self.completed_stages = set()
             self.path_edit.setText(str(path))
             self._save_settings()

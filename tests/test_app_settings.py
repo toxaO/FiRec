@@ -84,6 +84,13 @@ def test_main_window_restores_user_settings(qapp, isolated_settings):
     assert restored.display_option_checks["Light Edge"].isChecked() is False
 
 
+def test_main_window_starts_with_no_tool_selected(qapp, isolated_settings):
+    window = _make_window(qapp)
+
+    assert window.tool_mode is None
+    assert window.pan_tool_button.isChecked() is False
+
+
 def test_reset_radiation_field_does_not_overwrite_saved_defaults(qapp, isolated_settings):
     window = _make_window(qapp)
 
