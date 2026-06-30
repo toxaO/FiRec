@@ -23,6 +23,22 @@ POINT_COLOR = QColor(255, 120, 0)
 ROI_CIRCLE_COLOR = QColor(255, 170, 0)
 ROI_RECT_COLOR = QColor(255, 190, 0)
 RULER_COLOR = QColor(255, 90, 160)
+PROFILE_POINT_LABELS = {
+    "L1": "左1",
+    "R1": "右1",
+    "L2": "左2",
+    "R2": "右2",
+    "U1": "上1",
+    "D1": "下1",
+    "U2": "上2",
+    "D2": "下2",
+}
+CENTER_POINT_LABELS = {
+    "laser": "レーザー",
+    "radiation": "放射線",
+    "light": "光",
+}
+VERTEX_LABELS = ("左上", "右上", "右下", "左下")
 
 
 class ImageView(QGraphicsView):
@@ -238,7 +254,7 @@ class ImageView(QGraphicsView):
                 QPen(Qt.white, 2),
                 QBrush(POINT_COLOR),
             )
-            label = self.scene().addText(name)
+            label = self.scene().addText(PROFILE_POINT_LABELS.get(name, name))
             label.setDefaultTextColor(QColor(255, 255, 255))
             label.setPos(point.x + 6, point.y + 6)
             dot.setZValue(13)
@@ -316,7 +332,7 @@ class ImageView(QGraphicsView):
                 QPen(Qt.white, 1),
                 QBrush(LIGHT_EDGE_SELECTED_COLOR if name == "light" else RADIATION_COLOR),
             )
-            label = self.scene().addText(name)
+            label = self.scene().addText(CENTER_POINT_LABELS.get(name, name))
             label.setDefaultTextColor(QColor(255, 255, 255))
             label.setPos(point.x + 6, point.y + 6)
             dot.setZValue(14)
@@ -935,13 +951,12 @@ class ImageView(QGraphicsView):
             ("radiation", self.radiation_polygon, RADIATION_COLOR, self.show_radiation_vertices),
             ("light", self.light_polygon, LIGHT_EDGE_COLOR, self.show_light_vertices),
         )
-        vertex_labels = ("TL", "TR", "BR", "BL")
         for name, points, color, visible in fields:
             if points is None or not visible:
                 continue
             if name == "light" and self.active_field != "light":
                 continue
-            for label_text, point in zip(vertex_labels, points, strict=True):
+            for label_text, point in zip(VERTEX_LABELS, points, strict=True):
                 radius = 3
                 dot = self.scene().addEllipse(
                     point.x - radius,
@@ -951,7 +966,7 @@ class ImageView(QGraphicsView):
                     QPen(color, 1),
                     QBrush(color),
                 )
-                label = self.scene().addText(f"{name[0].upper()}{label_text}")
+                label = self.scene().addText(label_text)
                 label.setDefaultTextColor(color)
                 label.setPos(point.x + 4, point.y + 4)
                 dot.setZValue(12)
@@ -975,7 +990,7 @@ class ImageView(QGraphicsView):
                 QPen(Qt.white, 1),
                 QBrush(POINT_COLOR),
             ),
-            self.scene().addText("laser"),
+            self.scene().addText("レーザー"),
         ]
         items[-1].setDefaultTextColor(POINT_COLOR)
         items[-1].setPos(point.x + 7, point.y + 7)
@@ -997,7 +1012,7 @@ class ImageView(QGraphicsView):
                 QPen(POINT_COLOR, 1),
                 QBrush(POINT_COLOR),
             )
-            label = self.scene().addText(name)
+            label = self.scene().addText(CENTER_POINT_LABELS.get(name, name))
             font = QFont()
             font.setPointSize(14)
             label.setFont(font)

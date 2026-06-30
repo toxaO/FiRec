@@ -85,36 +85,41 @@ SETTING_DEFAULTS = {
 }
 
 DISPLAY_OPTION_KEYS = {
-    "Laser Center": "display_laser_center",
-    "Radiation Edge": "display_radiation_edge",
-    "Radiation Center": "display_radiation_center",
-    "Radiation Area": "display_radiation_area",
-    "Radiation Length": "display_radiation_length",
-    "Radiation Vertices": "display_radiation_vertices",
-    "Radiation boundary": "display_radiation_boundary",
-    "Light Edge": "display_light_edge",
-    "Light Center": "display_light_center",
-    "Light Length": "display_light_length",
-    "Light Vertices": "display_light_vertices",
+    "レーザー中心": "display_laser_center",
+    "照射野境界": "display_radiation_edge",
+    "照射野中心": "display_radiation_center",
+    "照射野面積": "display_radiation_area",
+    "照射野長さ": "display_radiation_length",
+    "照射野頂点": "display_radiation_vertices",
+    "照射野境界点": "display_radiation_boundary",
+    "光照射野境界": "display_light_edge",
+    "光照射野中心": "display_light_center",
+    "光照射野長さ": "display_light_length",
+    "光照射野頂点": "display_light_vertices",
 }
 
 RECORD_COLUMNS = (
-    ("created_at", "Created At"),
-    ("image_path", "Image Path"),
-    ("origin", "Origin"),
+    ("created_at", "作成日時"),
+    ("image_path", "画像"),
+    ("origin", "起点"),
     ("dpi", "DPI"),
-    ("unit", "Unit"),
-    ("laser_center_x", "Laser X"),
-    ("laser_center_y", "Laser Y"),
-    ("radiation_center_x", "Radiation X"),
-    ("radiation_center_y", "Radiation Y"),
-    ("light_center_x", "Light X"),
-    ("light_center_y", "Light Y"),
-    ("radiation_edge_length_x", "Radiation W"),
-    ("radiation_edge_length_y", "Radiation H"),
-    ("radiation_area", "Radiation Area"),
-    ("light_area", "Light Area"),
+    ("unit", "単位"),
+    ("laser_center_x", "レーザー中心X"),
+    ("laser_center_y", "レーザー中心Y"),
+    ("radiation_center_x", "照射野中心X"),
+    ("radiation_center_y", "照射野中心Y"),
+    ("light_center_x", "光照射野中心X"),
+    ("light_center_y", "光照射野中心Y"),
+    ("radiation_edge_length_x", "照射野横幅"),
+    ("radiation_edge_length_y", "照射野縦幅"),
+    ("radiation_area", "照射野面積"),
+    ("light_area", "光照射野面積"),
 )
+
+RECORD_COLUMN_SETTING_KEYS = {
+    key: f"record_column_visible_{key}"
+    for key, _label in RECORD_COLUMNS
+}
 
 TOOLS_ICON_DIR = Path(__file__).resolve().parent / "assets" / "icons" / "tools"
 
@@ -165,17 +170,17 @@ class MainWindow(QMainWindow):
         self.main_tabs = QTabWidget()
         self.main_tabs.currentChanged.connect(self._on_main_tab_changed)
         self.path_edit = QLineEdit()
-        self.image_info_label = QLabel("No image")
+        self.image_info_label = QLabel("画像なし")
         self.dpi_spin = QDoubleSpinBox()
-        self.analyse_dpi_image_radio = QRadioButton("Image")
-        self.analyse_dpi_manual_radio = QRadioButton("Manual")
+        self.analyse_dpi_image_radio = QRadioButton("メタデータ")
+        self.analyse_dpi_manual_radio = QRadioButton("手動")
         self.origin_combo = QComboBox()
         self.film_pixel_spin = QDoubleSpinBox()
         self.radiation_threshold_spin = QDoubleSpinBox()
         self.radiation_center_spin = QDoubleSpinBox()
         self.smoothing_window_spin = QSpinBox()
-        self.raw_profile_check = QCheckBox("Raw profile")
-        self.smoothed_profile_check = QCheckBox("Smoothed profile")
+        self.raw_profile_check = QCheckBox("raw")
+        self.smoothed_profile_check = QCheckBox("smoothed")
         self.tool_result_label = QLabel("")
         self.circle_roi: tuple[Point, float] | None = None
         self.rect_roi: tuple[Point, Point] | None = None
@@ -194,7 +199,7 @@ class MainWindow(QMainWindow):
             plot.on_cursor_moved = self._on_profile_cursor_moved
             plot.on_selected = lambda line_name=line_name: self._on_profile_plot_selected(line_name)
         self.result_tree = QTreeWidget()
-        self.result_tree.setHeaderLabels(["Item", "Value"])
+        self.result_tree.setHeaderLabels(["項目", "値"])
         self.result_tree.setMinimumHeight(260)
         self.results_table = QTableWidget()
         self.results_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -205,6 +210,8 @@ class MainWindow(QMainWindow):
         self.completed_stages: set[str] = set()
         self.display_option_checks: dict[str, QCheckBox] = {}
         self.record_column_checks: dict[str, QCheckBox] = {}
+        self.record_row_index_by_id: dict[int, int] = {}
+        self.record_rows_by_id: dict[int, dict[str, object]] = {}
 
         self.status = QStatusBar()
         self.setStatusBar(self.status)
@@ -219,7 +226,7 @@ class MainWindow(QMainWindow):
 
     def _build_layout(self) -> None:
         self.main_tabs.addTab(self._analyse_tab(), "Analyse")
-        self.main_tabs.addTab(self._record_tab(), "Record")
+        self.main_tabs.addTab(self._record_tab(), "Records")
         self.setCentralWidget(self.main_tabs)
 
     def _analyse_tab(self) -> QWidget:
@@ -332,14 +339,14 @@ class MainWindow(QMainWindow):
         return widget
 
     def _record_tab(self) -> QWidget:
-        refresh_button = _button("Refresh")
+        refresh_button = _button("更新")
         refresh_button.clicked.connect(self.refresh_results_table)
-        export_button = _button("Export CSV")
+        export_button = _button("CSV出力")
         export_button.clicked.connect(self.export_csv)
-        delete_button = _button("Delete")
+        delete_button = _button("削除")
         delete_button.clicked.connect(self.delete_selected_records)
 
-        columns_frame = _frame("Columns")
+        columns_frame = _frame("表示列")
         columns_layout = QGridLayout()
         columns_layout.setContentsMargins(6, 6, 6, 6)
         columns_layout.setSpacing(4)
@@ -370,7 +377,7 @@ class MainWindow(QMainWindow):
         return widget
 
     def _load_bar(self) -> QVBoxLayout:
-        browse_button = _button("Browse")
+        browse_button = _button("参照")
         browse_button.clicked.connect(self.browse_image_path)
 
         self.analyse_dpi_group = QButtonGroup(self)
@@ -392,7 +399,7 @@ class MainWindow(QMainWindow):
         self.dpi_spin.valueChanged.connect(lambda value: self._on_dpi_changed())
 
         self.path_edit.returnPressed.connect(self.load_from_path_edit)
-        self.path_edit.setPlaceholderText("TIFF image path")
+        self.path_edit.setPlaceholderText("TIFF画像パス")
         self.path_edit.setMinimumWidth(320)
         self.image_info_label.setMinimumWidth(180)
 
@@ -415,11 +422,11 @@ class MainWindow(QMainWindow):
         return layout
 
     def _zoom_buttons(self) -> QHBoxLayout:
-        zoom_in_button = _button("Zoom In")
+        zoom_in_button = _button("拡大")
         zoom_in_button.clicked.connect(self.view.zoom_in)
-        zoom_out_button = _button("Zoom Out")
+        zoom_out_button = _button("縮小")
         zoom_out_button.clicked.connect(self.view.zoom_out)
-        reset_button = _button("Reset")
+        reset_button = _button("リセット")
         reset_button.clicked.connect(self.view.reset_view)
 
         layout = QHBoxLayout()
@@ -431,12 +438,12 @@ class MainWindow(QMainWindow):
         return layout
 
     def _tool_frame(self) -> QGroupBox:
-        self.pan_tool_button = _icon_tool_button("tools_hand.png", "Pan")
-        self.zoom_tool_button = _icon_tool_button("tools_loupe.png", "Zoom")
-        self.circle_tool_button = _icon_tool_button("tools_circle.png", "Circle")
-        self.rect_tool_button = _icon_tool_button("tools_rect.png", "Rect")
-        self.ruler_tool_button = _icon_tool_button("tools_ruler.png", "Ruler")
-        reset_button = _icon_tool_button("tools_reset.png", "Reset")
+        self.pan_tool_button = _icon_tool_button("tools_hand.png", "パン")
+        self.zoom_tool_button = _icon_tool_button("tools_loupe.png", "ズーム")
+        self.circle_tool_button = _icon_tool_button("tools_circle.png", "円")
+        self.rect_tool_button = _icon_tool_button("tools_rect.png", "矩形")
+        self.ruler_tool_button = _icon_tool_button("tools_ruler.png", "定規")
+        reset_button = _icon_tool_button("tools_reset.png", "リセット")
         reset_button.clicked.connect(self.view.reset_view)
 
         for button in (
@@ -476,7 +483,7 @@ class MainWindow(QMainWindow):
             self.ruler_tool_button,
         ):
             tool_row.addWidget(button)
-        tool_row.addWidget(QLabel("Result"))
+        tool_row.addWidget(QLabel("結果"))
         self.tool_result_label.setMinimumWidth(120)
         self.tool_result_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         tool_row.addWidget(self.tool_result_label, 1)
@@ -487,33 +494,33 @@ class MainWindow(QMainWindow):
         layout.setSpacing(4)
         layout.addLayout(tool_row)
 
-        frame = _frame("Tools")
+        frame = _frame("ツール")
         frame.setLayout(layout)
         return frame
 
     def _laser_frame(self) -> tuple[QGroupBox, list[QWidget]]:
-        self.laser_status_label = QLabel("Set laser center.")
-        reset_button = _button("Reset")
+        self.laser_status_label = QLabel("レーザー中心を設定してください。")
+        reset_button = _button("リセット")
         reset_button.clicked.connect(self.reset_laser_center)
 
         layout = QVBoxLayout()
         layout.addWidget(self.laser_status_label)
         layout.addWidget(reset_button)
 
-        frame = _frame("Laser Center")
+        frame = _frame("レーザー中心")
         frame.setLayout(layout)
         frame.mousePressEvent = lambda event: self.go_to_stage("laser")
         return frame, [reset_button]
 
     def _radiation_frame(self) -> tuple[QGroupBox, list[QWidget]]:
-        self.radiation_status_label = QLabel("Set radiation boundary points")
-        reset_button = _button("Reset")
+        self.radiation_status_label = QLabel("照射野境界点を設定してください。")
+        reset_button = _button("リセット")
         reset_button.clicked.connect(self.reset_radiation_field)
 
         self.film_pixel_spin.setRange(-1_000_000_000.0, 1_000_000_000.0)
         self.film_pixel_spin.setDecimals(1)
         self.film_pixel_spin.setSingleStep(100.0)
-        self.film_pixel_spin.setToolTip("Raw pixel value for unirradiated film.")
+        self.film_pixel_spin.setToolTip("未照射フィルムの生ピクセル値。")
         self.film_pixel_spin.valueChanged.connect(lambda value: self._on_radiation_setting_changed())
 
         self.radiation_threshold_spin.setRange(0.0, 100.0)
@@ -535,8 +542,8 @@ class MainWindow(QMainWindow):
         self.smoothing_window_spin.setValue(5)
         self.smoothing_window_spin.valueChanged.connect(lambda value: self._on_radiation_setting_changed())
 
-        self.radiation_profile_auto_radio = QRadioButton("Auto")
-        self.radiation_profile_manual_radio = QRadioButton("Manual")
+        self.radiation_profile_auto_radio = QRadioButton("自動")
+        self.radiation_profile_manual_radio = QRadioButton("手動")
         self.radiation_profile_mode_group = QButtonGroup(self)
         self.radiation_profile_mode_group.addButton(self.radiation_profile_auto_radio)
         self.radiation_profile_mode_group.addButton(self.radiation_profile_manual_radio)
@@ -560,38 +567,38 @@ class MainWindow(QMainWindow):
         )
 
         settings_layout = QGridLayout()
-        settings_layout.addWidget(QLabel("Film baseline px"), 0, 0)
+        settings_layout.addWidget(QLabel("ベース画素値"), 0, 0)
         settings_layout.addWidget(self.film_pixel_spin, 0, 1)
-        settings_layout.addWidget(QLabel("Boundary"), 1, 0)
+        settings_layout.addWidget(QLabel("閾値"), 1, 0)
         settings_layout.addWidget(self.radiation_threshold_spin, 1, 1)
-        settings_layout.addWidget(QLabel("Range"), 2, 0)
+        settings_layout.addWidget(QLabel("照射野画素値平均範囲"), 2, 0)
         settings_layout.addWidget(self.radiation_center_spin, 2, 1)
-        settings_layout.addWidget(QLabel("Smooth px"), 3, 0)
+        settings_layout.addWidget(QLabel("smoothed px"), 3, 0)
         settings_layout.addWidget(self.smoothing_window_spin, 3, 1)
 
-        auto_page = QGroupBox("Auto")
+        auto_page = QGroupBox("auto")
         auto_layout = QVBoxLayout()
         auto_layout.setContentsMargins(6, 6, 6, 6)
         auto_layout.setSpacing(4)
-        auto_hint = QLabel("Place four profile lines at the same mm offset from the laser center.")
-        auto_hint.setWordWrap(True)
+        # auto_hint = QLabel("レーザー中心から同じ mm オフセットに4本のプロファイル線を配置します。")
+        # auto_hint.setWordWrap(True)
         auto_row = QHBoxLayout()
         auto_row.setContentsMargins(0, 0, 0, 0)
         auto_row.setSpacing(4)
-        auto_row.addWidget(QLabel("Offset"))
+        auto_row.addWidget(QLabel("レーザー中心からのoffset"))
         auto_row.addWidget(self.radiation_profile_distance_spin)
         auto_row.addStretch(1)
-        auto_layout.addWidget(auto_hint)
+        # auto_layout.addWidget(auto_hint)
         auto_layout.addLayout(auto_row)
         auto_page.setLayout(auto_layout)
 
-        manual_page = QGroupBox("Manual")
+        manual_page = QGroupBox("manual")
         manual_layout = QVBoxLayout()
         manual_layout.setContentsMargins(6, 6, 6, 6)
         manual_layout.setSpacing(4)
-        manual_hint = QLabel("Drag the profile lines directly. Reset returns them to the auto layout.")
+        manual_hint = QLabel("ラインプロファイル線を直接ドラッグして位置を決めます。")
         manual_hint.setWordWrap(True)
-        manual_reset_button = _button("Reset")
+        manual_reset_button = _button("リセット")
         manual_reset_button.clicked.connect(self.reset_radiation_profile_lines)
         manual_row = QHBoxLayout()
         manual_row.setContentsMargins(0, 0, 0, 0)
@@ -631,7 +638,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(profile_toggle_layout)
         layout.addWidget(reset_button)
 
-        frame = _frame("Radiation")
+        frame = _frame("照射野")
         frame.setLayout(layout)
         frame.mousePressEvent = lambda event: self.go_to_stage("radiation")
         return frame, [
@@ -649,25 +656,28 @@ class MainWindow(QMainWindow):
         ]
 
     def _light_frame(self) -> tuple[QGroupBox, list[QWidget]]:
-        reset_button = _button("Reset")
+        reset_button = _button("リセット")
         reset_button.clicked.connect(self.reset_light_field)
 
-        layout = QHBoxLayout()
+        layout = QVBoxLayout()
+        light_hint = QLabel("光照射野境界を直接ドラッグして位置を決めます。")
+        light_hint.setWordWrap(True)
+        layout.addWidget(light_hint)
         layout.addWidget(reset_button)
         layout.addStretch(1)
 
-        frame = _frame("Light")
+        frame = _frame("光照射野")
         frame.setLayout(layout)
         frame.mousePressEvent = lambda event: self.go_to_stage("light")
         return frame, [reset_button]
 
     def _result_frame(self) -> tuple[QGroupBox, list[QWidget]]:
-        save_button = _button("Save")
+        save_button = _button("保存")
         save_button.clicked.connect(self.save_current_result)
 
-        self.origin_combo.addItem("Origin: Laser", "laser")
-        self.origin_combo.addItem("Origin: Radiation", "radiation")
-        self.origin_combo.addItem("Origin: Light", "light")
+        self.origin_combo.addItem("起点: レーザー", "laser")
+        self.origin_combo.addItem("起点: 照射野", "radiation")
+        self.origin_combo.addItem("起点: 光照射野", "light")
         self.origin_combo.currentIndexChanged.connect(lambda index: self._on_result_origin_changed())
 
         controls = QHBoxLayout()
@@ -679,24 +689,24 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.result_tree)
         layout.addLayout(controls)
 
-        frame = _frame("Result")
+        frame = _frame("結果")
         frame.setLayout(layout)
         frame.mousePressEvent = lambda event: self.go_to_stage("result")
         return frame, [self.origin_combo, save_button]
 
     def _display_options_frame(self) -> QGroupBox:
         options = (
-            ("Laser Center", self.view.set_show_laser_center),
-            ("Radiation Edge", self.view.set_show_radiation_edges),
-            ("Radiation Center", self.view.set_show_radiation_center),
-            ("Radiation Area", self.view.set_show_radiation_area),
-            ("Radiation Length", self.view.set_show_radiation_edge_lengths),
-            ("Radiation Vertices", self.view.set_show_radiation_vertices),
-            ("Radiation boundary", self.view.set_show_radiation_points),
-            ("Light Edge", self.view.set_show_light_edges),
-            ("Light Center", self.view.set_show_light_center),
-            ("Light Length", self.view.set_show_light_edge_lengths),
-            ("Light Vertices", self.view.set_show_light_vertices),
+            ("レーザー中心", self.view.set_show_laser_center),
+            ("照射野境界", self.view.set_show_radiation_edges),
+            ("照射野中心", self.view.set_show_radiation_center),
+            ("照射野面積", self.view.set_show_radiation_area),
+            ("照射野長さ", self.view.set_show_radiation_edge_lengths),
+            ("照射野頂点", self.view.set_show_radiation_vertices),
+            ("照射野境界点", self.view.set_show_radiation_points),
+            ("光照射野境界", self.view.set_show_light_edges),
+            ("光照射野中心", self.view.set_show_light_center),
+            ("光照射野長さ", self.view.set_show_light_edge_lengths),
+            ("光照射野頂点", self.view.set_show_light_vertices),
         )
         visibility_layout = QGridLayout()
         for index, (label, callback) in enumerate(options):
@@ -708,7 +718,7 @@ class MainWindow(QMainWindow):
             )
             self.display_option_checks[label] = check
             visibility_layout.addWidget(check, index // 2, index % 2)
-        frame = _frame("Options")
+        frame = _frame("表示オプション")
         frame.setLayout(visibility_layout)
         return frame
 
@@ -747,9 +757,9 @@ class MainWindow(QMainWindow):
         return frame, toggle
 
     def _step_nav_buttons(self) -> QHBoxLayout:
-        step_label = QLabel("step")
-        back_button = _nav_button("▲ previous")
-        next_button = _nav_button("▼ next")
+        step_label = QLabel("解析ステップ")
+        back_button = _nav_button("▲ 前へ")
+        next_button = _nav_button("▼ 次へ")
         back_button.clicked.connect(lambda: self.move_stage(True))
         next_button.clicked.connect(lambda: self.move_stage(False))
 
@@ -763,9 +773,9 @@ class MainWindow(QMainWindow):
     def browse_image_path(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Open TIFF image",
+            "TIFF画像を開く",
             self.path_edit.text().strip() or str(Path.cwd()),
-            "Images (*.tif *.tiff);;All files (*)",
+            "TIFF画像 (*.tif *.tiff);;すべてのファイル (*)",
         )
         if path:
             self.path_edit.setText(path)
@@ -774,7 +784,7 @@ class MainWindow(QMainWindow):
     def load_from_path_edit(self) -> None:
         path_text = self.path_edit.text().strip()
         if not path_text:
-            QMessageBox.warning(self, "No image path", "Enter or browse a TIFF image path.")
+            QMessageBox.warning(self, "画像パスなし", "TIFF画像のパスを入力するか参照してください。")
             return
         self.load_path(Path(path_text))
 
@@ -816,18 +826,18 @@ class MainWindow(QMainWindow):
             self.path_edit.setText(str(path))
             self._save_settings()
             self.activate_stage("laser")
-            self.status.showMessage("Loaded image.")
+            self.status.showMessage("画像を読み込みました。")
             self._update_result_label()
         except Exception as error:
-            QMessageBox.critical(self, "Load failed", str(error))
+            QMessageBox.critical(self, "読み込み失敗", str(error))
 
     def _update_image_info(self) -> None:
         if self.image is None:
-            self.image_info_label.setText("No image")
+            self.image_info_label.setText("画像なし")
             return
         minimum = float(np.min(self.image))
         maximum = float(np.max(self.image))
-        self.image_info_label.setText(f"{self.image.dtype} min {minimum:.1f} max {maximum:.1f}")
+        self.image_info_label.setText(f"{self.image.dtype} 最小 {minimum:.1f} 最大 {maximum:.1f}")
 
     def _set_default_radiation_settings(self) -> None:
         if self.image is None:
@@ -886,14 +896,14 @@ class MainWindow(QMainWindow):
         if self.analyse_dpi_mode == "manual":
             self.dpi_spin.setEnabled(True)
             self.dpi_spin.setValue(float(self.analyse_manual_dpi))
-            self.dpi_spin.setToolTip("Manual DPI used for analysis.")
+            self.dpi_spin.setToolTip("解析に使用する手動 DPI です。")
         else:
             self.dpi_spin.setEnabled(False)
             self.dpi_spin.setValue(float(self._effective_dpi()))
             if self._loaded_image_dpi > 0:
-                self.dpi_spin.setToolTip("DPI from image metadata.")
+                self.dpi_spin.setToolTip("画像メタデータの DPI を使用します。")
             else:
-                self.dpi_spin.setToolTip("Image DPI unavailable. Falling back to the previous manual DPI.")
+                self.dpi_spin.setToolTip("画像 DPI がありません。前回の手動 DPI を使います。")
         self.dpi_spin.blockSignals(False)
 
     def _save_analyse_dpi_settings(self) -> None:
@@ -1022,8 +1032,11 @@ class MainWindow(QMainWindow):
             for label, check in self.display_option_checks.items():
                 key = DISPLAY_OPTION_KEYS[label]
                 check.setChecked(self._settings_bool(key, True))
+            for key, check in self.record_column_checks.items():
+                check.setChecked(self._settings_bool(RECORD_COLUMN_SETTING_KEYS[key], True))
             self._sync_analyse_dpi_ui()
             self._update_profile_visibility()
+            self._sync_record_column_visibility()
 
     def _save_settings(self) -> None:
         self.settings.setValue("last_image_path", self.path_edit.text().strip())
@@ -1104,20 +1117,20 @@ class MainWindow(QMainWindow):
             if backward:
                 return
             if self.image is None:
-                QMessageBox.warning(self, "No image", "Load an image before moving to Radiation.")
+                QMessageBox.warning(self, "画像なし", "照射野設定ステップへ進む前に画像を読み込んでください。")
                 return
             self.confirm_laser_center()
             return
         if self.current_stage == "radiation" and self.image is None:
             if not backward:
-                QMessageBox.warning(self, "No image", "Load an image before moving to Light.")
+                QMessageBox.warning(self, "画像なし", "光照射野設定ステップへ進む前に画像を読み込んでください。")
             return
         if self.current_stage == "radiation" and self.image is not None and not backward:
             self._capture_radiation_points()
             if self._build_radiation_from_points():
                 self.confirm_radiation_field()
                 return
-            QMessageBox.warning(self, "Incomplete radiation field", "Set all radiation points before moving to Light.")
+            QMessageBox.warning(self, "照射野設定 未完了", "光照射野設定ステップへ進む前にすべての照射野点を設定してください。")
             return
         if self.current_stage == "light" and not backward:
             self.confirm_light_field()
@@ -1184,7 +1197,7 @@ class MainWindow(QMainWindow):
         if self.laser_center is None:
             self.laser_center = self._default_laser_center()
         if self.laser_center is None:
-            QMessageBox.warning(self, "No laser center", "Load an image before setting laser center.")
+            QMessageBox.warning(self, "レーザー中心なし", "レーザー中心を設定する前に画像を読み込んでください。")
             return
         self.completed_stages.add("laser")
         self.activate_stage("radiation")
@@ -1201,14 +1214,14 @@ class MainWindow(QMainWindow):
         self.view.set_laser_center(self.laser_center)
         self._sync_laser_step_ui()
         self._update_result_label()
-        self.status.showMessage("Reset laser center.")
+        self.status.showMessage("レーザー中心をリセットしました。")
 
     def confirm_radiation_field(self) -> None:
         if self.current_stage != "radiation":
             return
         if self.radiation_rect is None:
             if not self._build_radiation_from_points():
-                QMessageBox.warning(self, "No radiation field", "Set all radiation points before setting radiation field.")
+                QMessageBox.warning(self, "照射野なし", "照射野を設定する前にすべての照射野点を設定してください。")
                 return
         if self.radiation_rect is None:
             return
@@ -1240,7 +1253,7 @@ class MainWindow(QMainWindow):
             self._set_radiation_profile_mode("auto", update_ui=True)
         if self.current_stage == "radiation":
             self._redetect_radiation_lines()
-        self.status.showMessage("Reset radiation boundary detection.")
+        self.status.showMessage("照射野境界の自動検出をリセットしました。")
         self._update_result_label()
 
     def reset_radiation_profile_lines(self) -> None:
@@ -1248,26 +1261,26 @@ class MainWindow(QMainWindow):
             self.manual_radiation_profile_lines = self._auto_radiation_profile_positions()
             self._manual_radiation_profile_dirty = False
             self._set_radiation_profile_mode("manual", update_ui=True)
-        self.status.showMessage("Reset radiation profile lines.")
+        self.status.showMessage("照射野プロファイル線をリセットしました。")
 
     def reset_light_field(self) -> None:
         if self.current_stage != "light":
             return
         if self.radiation_rect is None:
-            QMessageBox.warning(self, "No radiation field", "Set radiation field before resetting light field.")
+            QMessageBox.warning(self, "照射野なし", "光照射野をリセットする前に照射野を設定してください。")
             return
         self.light_rect = self.radiation_rect
         self.view.set_light_rect(self.light_rect)
         if self.radiation_polygon is not None:
             self.view.set_light_polygon(self.radiation_polygon)
-        self.status.showMessage("Reset light field to radiation field.")
+        self.status.showMessage("光照射野を照射野に戻しました。")
         self._update_result_label()
 
     def confirm_light_field(self) -> None:
         if self.current_stage != "light":
             return
         if self.radiation_rect is None or self.light_rect is None:
-            QMessageBox.warning(self, "No light field", "Set radiation field before setting light field.")
+            QMessageBox.warning(self, "光照射野なし", "光照射野を設定する前に照射野を設定してください。")
             return
         self.completed_stages.add("light")
         self.activate_stage("result")
@@ -1289,11 +1302,11 @@ class MainWindow(QMainWindow):
         if self.current_stage != "result":
             return
         if self.image_path is None or self.radiation_rect is None or self.light_rect is None:
-            QMessageBox.warning(self, "Cannot save", "Set both rectangles before saving.")
+            QMessageBox.warning(self, "保存できません", "保存する前に両方の矩形を設定してください。")
             return
         raw_result = self._current_analysis_result("laser", raw_pixels=True)
         if raw_result is None:
-            QMessageBox.warning(self, "Cannot save", "Set both rectangles before saving.")
+            QMessageBox.warning(self, "保存できません", "保存する前に両方の矩形を設定してください。")
             return
         save_analysis(
             self.connection,
@@ -1303,12 +1316,12 @@ class MainWindow(QMainWindow):
             self._effective_dpi(),
         )
         self.refresh_results_table()
-        self.status.showMessage("Saved analysis result.")
+        self.status.showMessage("解析結果を保存しました。")
 
     def export_csv(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "Export CSV",
+            "CSVを出力",
             str(Path.cwd() / "firec_results.csv"),
             "CSV (*.csv)",
         )
@@ -1316,10 +1329,10 @@ class MainWindow(QMainWindow):
             return
         rows = self._display_record_rows(fetch_analysis_rows(self.connection))
         if not rows:
-            QMessageBox.information(self, "No data", "There are no saved results to export.")
+            QMessageBox.information(self, "データなし", "出力する保存結果がありません。")
             return
         export_rows_to_csv(rows, path)
-        self.status.showMessage(f"Exported {path}")
+        self.status.showMessage(f"CSVを出力しました: {path}")
 
     def delete_selected_records(self) -> None:
         selected_rows = sorted({index.row() for index in self.results_table.selectedIndexes()}, reverse=True)
@@ -1329,7 +1342,7 @@ class MainWindow(QMainWindow):
             if 0 <= row_index < len(self.result_row_ids):
                 delete_analysis(self.connection, self.result_row_ids[row_index])
         self.refresh_results_table()
-        self.status.showMessage(f"Deleted {len(selected_rows)} record(s).")
+        self.status.showMessage(f"{len(selected_rows)} 件の記録を削除しました。")
 
     def refresh_results_table(self) -> None:
         self.results_table.blockSignals(True)
@@ -1339,16 +1352,13 @@ class MainWindow(QMainWindow):
         rows = self._display_record_rows(raw_rows)
         columns = [key for key, _label in RECORD_COLUMNS]
         self.result_row_ids = [int(row["id"]) for row in raw_rows]
+        self.record_row_index_by_id = {int(row["id"]): row_index for row_index, row in enumerate(raw_rows)}
+        self.record_rows_by_id = {int(row["id"]): dict(row) for row in raw_rows}
         self.results_table.setColumnCount(len(columns))
         self.results_table.setHorizontalHeaderLabels([label for _key, label in RECORD_COLUMNS])
         self.results_table.setRowCount(len(rows))
-        for row_index, row in enumerate(rows):
-            for column_index, column in enumerate(columns):
-                value = row.get(column, "")
-                if column in ("origin", "dpi"):
-                    continue
-                self.results_table.setItem(row_index, column_index, QTableWidgetItem(str(value)))
-            self._set_record_row_controls(row_index, int(raw_rows[row_index]["id"]), raw_rows[row_index])
+        for row_index, (raw_row, row) in enumerate(zip(raw_rows, rows, strict=True)):
+            self._render_record_row(row_index, row, int(raw_row["id"]))
         self._sync_record_column_visibility()
         self.results_table.resizeColumnsToContents()
         self.results_table.blockSignals(False)
@@ -1456,40 +1466,66 @@ class MainWindow(QMainWindow):
         self._update_result_label()
 
     def _set_record_row_controls(self, row_index: int, analysis_id: int, row: dict[str, object]) -> None:
-        origin_widget = QComboBox()
-        origin_widget.addItem("laser", "laser")
-        origin_widget.addItem("radiation", "radiation")
-        origin_widget.addItem("light", "light")
-        origin_widget.setMaximumWidth(110)
+        origin_widget = self.results_table.cellWidget(row_index, 2)
+        if not isinstance(origin_widget, QComboBox):
+            origin_widget = QComboBox()
+            origin_widget.addItem("レーザー", "laser")
+            origin_widget.addItem("照射野", "radiation")
+            origin_widget.addItem("光照射野", "light")
+            origin_widget.setMaximumWidth(110)
+            origin_widget.currentIndexChanged.connect(
+                lambda index, analysis_id=analysis_id, origin_widget=origin_widget: self._on_record_metadata_changed(
+                    analysis_id,
+                    str(origin_widget.currentData() or "laser"),
+                    self._record_dpi_from_widget(row_index),
+                )
+            )
+            self.results_table.setCellWidget(row_index, 2, origin_widget)
         origin_widget.blockSignals(True)
         self._set_combo_data(origin_widget, str(row["origin"]))
         origin_widget.blockSignals(False)
-        origin_widget.currentIndexChanged.connect(
-            lambda index, analysis_id=analysis_id, origin_widget=origin_widget, dpi_widget_ref=row_index: self._on_record_metadata_changed(
-                analysis_id,
-                str(origin_widget.currentData() or "laser"),
-                self._record_dpi_from_widget(dpi_widget_ref),
-            )
-        )
-        self.results_table.setCellWidget(row_index, 2, origin_widget)
 
-        dpi_widget = QDoubleSpinBox()
-        dpi_widget.setRange(0.0, 10000.0)
-        dpi_widget.setDecimals(1)
-        dpi_widget.setSingleStep(1.0)
-        dpi_widget.setSpecialValueText("px")
-        dpi_widget.setMaximumWidth(110)
+        dpi_widget = self.results_table.cellWidget(row_index, 3)
+        if not isinstance(dpi_widget, QDoubleSpinBox):
+            dpi_widget = QDoubleSpinBox()
+            dpi_widget.setRange(0.0, 10000.0)
+            dpi_widget.setDecimals(1)
+            dpi_widget.setSingleStep(1.0)
+            dpi_widget.setSpecialValueText("px")
+            dpi_widget.setMaximumWidth(110)
+            dpi_widget.valueChanged.connect(
+                lambda value, analysis_id=analysis_id, dpi_widget=dpi_widget: self._on_record_metadata_changed(
+                    analysis_id,
+                    self._record_origin_from_widget(row_index),
+                    float(dpi_widget.value()),
+                )
+            )
+            self.results_table.setCellWidget(row_index, 3, dpi_widget)
         dpi_widget.blockSignals(True)
         dpi_widget.setValue(float(row["dpi"]))
         dpi_widget.blockSignals(False)
-        dpi_widget.valueChanged.connect(
-            lambda value, analysis_id=analysis_id, origin_widget_ref=row_index, dpi_widget=dpi_widget: self._on_record_metadata_changed(
-                analysis_id,
-                self._record_origin_from_widget(origin_widget_ref),
-                float(dpi_widget.value()),
-            )
-        )
-        self.results_table.setCellWidget(row_index, 3, dpi_widget)
+
+    def _render_record_row(self, row_index: int, row: dict[str, object], analysis_id: int) -> None:
+        columns = [key for key, _label in RECORD_COLUMNS]
+        for column_index, column in enumerate(columns):
+            if column in ("origin", "dpi"):
+                continue
+            item = self.results_table.item(row_index, column_index)
+            if item is None:
+                item = QTableWidgetItem()
+                self.results_table.setItem(row_index, column_index, item)
+            item.setText(str(row.get(column, "")))
+        self._set_record_row_controls(row_index, analysis_id, row)
+
+    def _refresh_record_row(self, analysis_id: int) -> None:
+        row_index = self.record_row_index_by_id.get(analysis_id)
+        row = self.record_rows_by_id.get(analysis_id)
+        if row_index is None or row is None:
+            self.refresh_results_table()
+            return
+        self._render_record_row(row_index, _record_display_row(row), analysis_id)
+        self._sync_record_column_visibility()
+        self.results_table.resizeColumnsToContents()
 
     def _record_origin_from_widget(self, row_index: int) -> str:
         widget = self.results_table.cellWidget(row_index, 2)
@@ -1505,9 +1541,19 @@ class MainWindow(QMainWindow):
 
     def _on_record_metadata_changed(self, analysis_id: int, origin: str, dpi: float) -> None:
         update_analysis_record(self.connection, analysis_id, origin, dpi)
-        self.refresh_results_table()
+        row = self.record_rows_by_id.get(analysis_id)
+        if row is None:
+            self.refresh_results_table()
+            return
+        updated_row = dict(row)
+        updated_row["origin"] = origin
+        updated_row["dpi"] = _round1(dpi)
+        self.record_rows_by_id[analysis_id] = updated_row
+        self._refresh_record_row(analysis_id)
 
     def _on_record_column_visibility_changed(self, key: str, checked: bool) -> None:
+        if not self._settings_write_suppressed:
+            self.settings.setValue(RECORD_COLUMN_SETTING_KEYS[key], checked)
         self._sync_record_column_visibility()
 
     def _sync_record_column_visibility(self) -> None:
@@ -1634,7 +1680,7 @@ class MainWindow(QMainWindow):
         except ValueError:
             self.tool_result_label.setText("")
             return
-        self.tool_result_label.setText(f"Circle: {self._format_measurement(value)}")
+        self.tool_result_label.setText(f"円: {self._format_measurement(value)}")
 
     def _on_rect_roi_changed(self, roi: tuple[Point, Point] | None) -> None:
         self.rect_roi = roi
@@ -1646,7 +1692,7 @@ class MainWindow(QMainWindow):
         except ValueError:
             self.tool_result_label.setText("")
             return
-        self.tool_result_label.setText(f"Rect: {self._format_measurement(value)}")
+        self.tool_result_label.setText(f"矩形: {self._format_measurement(value)}")
 
     def _on_ruler_changed(self, points: tuple[Point, Point] | None) -> None:
         self.ruler_points = points
@@ -1656,7 +1702,7 @@ class MainWindow(QMainWindow):
         dpi = self._effective_dpi()
         length_px = hypot(points[1].x - points[0].x, points[1].y - points[0].y)
         length_mm = length_px * 25.4 / dpi if dpi > 0 else length_px
-        self.tool_result_label.setText(f"Ruler: {self._format_measurement(length_mm, ' mm')}")
+        self.tool_result_label.setText(f"定規: {self._format_measurement(length_mm, ' mm')}")
 
     def _redetect_radiation_lines(self) -> None:
         if self.current_stage != "radiation" or self.image is None:
@@ -1668,10 +1714,10 @@ class MainWindow(QMainWindow):
     def _update_radiation_auto_status(self) -> None:
         if self._auto_detection_failures:
             names = ", ".join(sorted(self._auto_detection_failures))
-            self.status.showMessage(f"Radiation boundary auto detection failed: {names}")
+            self.status.showMessage(f"照射野境界の自動検出に失敗しました: {names}")
             return
         if self.current_stage == "radiation":
-            self.status.showMessage("Radiation boundary points updated.")
+            self.status.showMessage("照射野境界点を更新しました。")
 
     def _capture_radiation_points(self) -> None:
         lines = self.view.profile_lines()
@@ -1696,9 +1742,9 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "laser_status_label"):
             return
         if self.laser_center is None:
-            self.laser_status_label.setText("Set laser center.")
+            self.laser_status_label.setText("レーザー中心を設定してください。")
         else:
-            self.laser_status_label.setText(f"Laser center: {_format_point(self.laser_center)}")
+            self.laser_status_label.setText(f"レーザー中心を設定: {_format_point(self.laser_center)}")
         if self.current_stage != "laser":
             return
         self._set_laser_profile_cursors()
@@ -1736,10 +1782,10 @@ class MainWindow(QMainWindow):
         self._update_profile_visibility()
         if self._auto_detection_failures:
             names = ", ".join(sorted(self._auto_detection_failures))
-            self.radiation_status_label.setText(f"Auto detection failed: {names}")
+            self.radiation_status_label.setText(f"自動検出に失敗しました: {names}")
         else:
             count = sum(1 for point_names in PROFILE_POINT_NAMES.values() for name in point_names if name in self.profile_cursors)
-            self.radiation_status_label.setText(f"Radiation boundary points: {count}/8")
+            self.radiation_status_label.setText(f"照射野境界点: {count}/8")
         if self.current_stage != "radiation":
             if self.current_stage != "laser":
                 for plot in self.profile_plots.values():
@@ -1835,14 +1881,14 @@ class MainWindow(QMainWindow):
 
     def _populate_result_tree(self, result: AnalysisResult) -> None:
         self.result_tree.clear()
-        self.result_tree.setHeaderLabels(["Item", "Value"])
+        self.result_tree.setHeaderLabels(["項目", "値"])
         area_unit = f"{result.unit}^2"
-        _add_tree_item(self.result_tree, "Origin", f"{result.origin_field} center")
-        _add_tree_item(self.result_tree, "Unit", result.unit if result.dpi <= 0 else f"{result.unit} (DPI {result.dpi:.1f})")
+        _add_tree_item(self.result_tree, "起点", f"{result.origin_field} 中心")
+        _add_tree_item(self.result_tree, "単位", result.unit if result.dpi <= 0 else f"{result.unit} (DPI {result.dpi:.1f})")
         if result.laser_center is not None:
-            _add_tree_item(self.result_tree, "Laser Center", _format_point(result.laser_center))
-        radiation_item = _add_field_tree(self.result_tree, "Radiation", result.radiation_field, area_unit)
-        light_item = _add_field_tree(self.result_tree, "Light", result.light_field, area_unit)
+            _add_tree_item(self.result_tree, "レーザー中心", _format_point(result.laser_center))
+        radiation_item = _add_field_tree(self.result_tree, "照射野", result.radiation_field, area_unit)
+        light_item = _add_field_tree(self.result_tree, "光照射野", result.light_field, area_unit)
         radiation_item.setExpanded(True)
         light_item.setExpanded(True)
         self.result_tree.resizeColumnToContents(0)
@@ -1969,10 +2015,10 @@ def _plain_frame(layout: QHBoxLayout | QVBoxLayout) -> QFrame:
 
 def _stage_title(stage: str, completed: bool) -> str:
     labels = {
-        "laser": "Laser Center",
-        "radiation": "Radiation",
-        "light": "Light",
-        "result": "Result",
+        "laser": "レーザー中心",
+        "radiation": "照射野",
+        "light": "光照射野",
+        "result": "結果",
     }
     prefix = "✓ " if completed else ""
     return f"{prefix}{labels[stage]}"
@@ -2074,21 +2120,21 @@ def _same_line(
 
 
 def _add_field_tree(parent: QTreeWidget | QTreeWidgetItem, label: str, field: FieldGeometry, area_unit: str) -> QTreeWidgetItem:
-    vertex_labels = ("TL", "TR", "BR", "BL")
-    edge_labels = ("top", "right", "bottom", "left")
+    vertex_labels = ("左上", "右上", "右下", "左下")
+    edge_labels = ("上", "右", "下", "左")
     field_item = _add_tree_item(parent, label)
-    _add_tree_item(field_item, "Center", _format_point(field.center))
-    _add_tree_item(field_item, "Area Length X", f"{field.area_length_x:.1f}")
-    _add_tree_item(field_item, "Area Length Y", f"{field.area_length_y:.1f}")
-    _add_tree_item(field_item, "Average Edge", f"{field.average_edge_length:.1f}")
-    _add_tree_item(field_item, "Area", f"{field.area:.1f} {area_unit}")
+    _add_tree_item(field_item, "中心", _format_point(field.center))
+    _add_tree_item(field_item, "面積長X", f"{field.area_length_x:.1f}")
+    _add_tree_item(field_item, "面積長Y", f"{field.area_length_y:.1f}")
+    _add_tree_item(field_item, "平均辺長", f"{field.average_edge_length:.1f}")
+    _add_tree_item(field_item, "面積", f"{field.area:.1f} {area_unit}")
 
-    vertices_item = _add_tree_item(field_item, "Vertices")
+    vertices_item = _add_tree_item(field_item, "頂点")
     for name, point in zip(vertex_labels, field.points, strict=True):
         _add_tree_item(vertices_item, name, _format_point(point))
     vertices_item.setExpanded(False)
 
-    edge_item = _add_tree_item(field_item, "Edge Lengths")
+    edge_item = _add_tree_item(field_item, "辺長")
     for name, length in zip(edge_labels, field.edge_lengths, strict=True):
         _add_tree_item(edge_item, name, f"{length:.1f}")
     edge_item.setExpanded(False)

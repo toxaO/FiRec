@@ -9,6 +9,7 @@ from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
 
 from firec.gui import app as app_module
+from firec.gui.image_view import ImageView
 from firec.core.analysis import compare_field_polygons
 from firec.core.geometry import Point, RotatedRect
 from firec.storage.repository import connect_database
@@ -62,13 +63,15 @@ def test_main_window_restores_user_settings(qapp, isolated_settings):
     window.raw_profile_check.setChecked(False)
     window.smoothed_profile_check.setChecked(False)
     window.origin_combo.setCurrentIndex(window.origin_combo.findData("light"))
-    window.display_option_checks["Radiation Center"].setChecked(False)
-    window.display_option_checks["Light Edge"].setChecked(False)
+    window.display_option_checks["放射線中心"].setChecked(False)
+    window.display_option_checks["光境界"].setChecked(False)
     window.settings.sync()
     window.close()
 
     restored = _make_window(qapp)
 
+    assert restored.main_tabs.tabText(0) == "解析"
+    assert restored.main_tabs.tabText(1) == "記録"
     assert restored.analyse_dpi_mode == "manual"
     assert restored.analyse_manual_dpi == 96.0
     assert restored.film_pixel_spin.value() == 321.0
@@ -80,8 +83,8 @@ def test_main_window_restores_user_settings(qapp, isolated_settings):
     assert restored.raw_profile_check.isChecked() is False
     assert restored.smoothed_profile_check.isChecked() is False
     assert restored.origin_combo.currentData() == "light"
-    assert restored.display_option_checks["Radiation Center"].isChecked() is False
-    assert restored.display_option_checks["Light Edge"].isChecked() is False
+    assert restored.display_option_checks["放射線中心"].isChecked() is False
+    assert restored.display_option_checks["光境界"].isChecked() is False
 
 
 def test_main_window_starts_with_no_tool_selected(qapp, isolated_settings):
@@ -119,9 +122,11 @@ def test_record_rows_edit_origin_and_dpi_independently(qapp, isolated_settings):
         origin_field="laser",
         origin_point=Point(0, 0),
     )
-    save_analysis(window.connection, "image.tif", result, "laser", 0.0)
+    save_analysis(window.connection, "image-1.tif", result, "laser", 0.0)
+    save_analysis(window.connection, "image-2.tif", result, "laser", 0.0)
 
     window.refresh_results_table()
+    window.results_table.selectRow(0)
 
     origin_widget = window.results_table.cellWidget(0, 2)
     assert origin_widget is not None
@@ -131,6 +136,7 @@ def test_record_rows_edit_origin_and_dpi_independently(qapp, isolated_settings):
     assert rows[0]["origin"] == "radiation"
     assert window.results_table.item(0, 7).text() == "0.0"
     assert window.results_table.item(0, 5).text() == "-10.0"
+    assert window.results_table.selectedIndexes()[0].row() == 0
 
     dpi_widget = window.results_table.cellWidget(0, 3)
     assert dpi_widget is not None
@@ -141,6 +147,8 @@ def test_record_rows_edit_origin_and_dpi_independently(qapp, isolated_settings):
     assert window.results_table.item(0, 4).text() == "mm"
     assert window.results_table.item(0, 5).text() == "-1.0"
     assert window.results_table.item(0, 7).text() == "0.0"
+    assert window.results_table.selectedIndexes()[0].row() == 0
+    assert window.results_table.item(1, 4).text() == "px"
 
 
 def test_record_columns_can_be_hidden_with_checkboxes(qapp, isolated_settings):
@@ -149,10 +157,14 @@ def test_record_columns_can_be_hidden_with_checkboxes(qapp, isolated_settings):
     assert all(check.isChecked() for check in window.record_column_checks.values())
     window.record_column_checks["origin"].setChecked(False)
     window.record_column_checks["dpi"].setChecked(False)
+    window.settings.sync()
+    window.close()
 
-    assert window.results_table.isColumnHidden(2) is True
-    assert window.results_table.isColumnHidden(3) is True
-    assert window.results_table.isColumnHidden(0) is False
+    restored = _make_window(qapp)
+
+    assert restored.results_table.isColumnHidden(2) is True
+    assert restored.results_table.isColumnHidden(3) is True
+    assert restored.results_table.isColumnHidden(0) is False
 
 
 def test_film_baseline_uses_saved_value_across_images(qapp, isolated_settings, monkeypatch, tmp_path):
@@ -177,3 +189,12 @@ def test_film_baseline_uses_saved_value_across_images(qapp, isolated_settings, m
     restored.load_path(Path(tmp_path / "b.tif"))
 
     assert restored.film_pixel_spin.value() == 555.0
+
+
+def test_image_view_uses_japanese_floating_labels(qapp):
+    view = ImageView()
+    view.set_image(np.zeros((4, 4), dtype=np.float32))
+    view.set_laser_center(Point(1.0, 2.0))
+    texts = [item.toPlainText() for item in view.scene().items() if hasattr(item, "toPlainText")]
+
+    assert "レーザー" in texts
