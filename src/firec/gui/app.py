@@ -249,17 +249,23 @@ class MainWindow(QMainWindow):
             "light": light_controls,
             "result": result_controls,
         }
-        side_layout.addLayout(self._step_nav_buttons())
+        display_options_frame = self._display_options_frame()
+        step_nav_widget = _plain_frame(self._step_nav_buttons())
+        step_nav_widget.setContentsMargins(0, 0, 0, 0)
         side_layout.addWidget(laser_frame)
         side_layout.addWidget(radiation_frame)
         side_layout.addWidget(light_frame)
         side_layout.addWidget(result_frame)
-        side_layout.addWidget(self._display_options_frame())
         side_layout.addStretch(1)
 
         side_panel = _plain_frame(side_layout)
         side_panel.setMinimumWidth(280)
         side_panel.setMaximumWidth(340)
+
+        side_container_layout = QVBoxLayout()
+        side_container_layout.setContentsMargins(0, 0, 0, 0)
+        side_container_layout.setSpacing(6)
+        side_container_layout.addWidget(step_nav_widget)
 
         side_scroll = QScrollArea()
         side_scroll.setWidget(side_panel)
@@ -267,6 +273,14 @@ class MainWindow(QMainWindow):
         side_scroll.setMinimumWidth(300)
         side_scroll.setMaximumWidth(360)
         side_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        side_container_layout.addWidget(side_scroll, 1)
+        side_container_layout.addWidget(display_options_frame)
+
+        side_container = QWidget()
+        side_container.setLayout(side_container_layout)
+        side_container.setMinimumWidth(300)
+        side_container.setMaximumWidth(360)
 
         left_profile_layout = QVBoxLayout()
         left_profile_layout.setContentsMargins(0, 0, 0, 0)
@@ -332,7 +346,7 @@ class MainWindow(QMainWindow):
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(6)
         content_layout.addLayout(layout, 1)
-        content_layout.addWidget(side_scroll)
+        content_layout.addWidget(side_container)
 
         widget = QWidget()
         widget.setLayout(content_layout)
