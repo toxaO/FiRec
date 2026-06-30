@@ -121,7 +121,21 @@ RECORD_COLUMN_SETTING_KEYS = {
     for key, _label in RECORD_COLUMNS
 }
 
-TOOLS_ICON_DIR = Path(__file__).resolve().parent / "assets" / "icons" / "tools"
+def _resource_dir(*parts: str) -> Path:
+    base_dir = Path(__file__).resolve().parent
+    frozen_base = Path(getattr(sys, "_MEIPASS", base_dir))
+    candidates = (
+        base_dir.joinpath(*parts),
+        frozen_base.joinpath(*parts),
+        frozen_base.joinpath("firec", "gui", *parts),
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+TOOLS_ICON_DIR = _resource_dir("assets", "icons", "tools")
 
 
 class MainWindow(QMainWindow):
