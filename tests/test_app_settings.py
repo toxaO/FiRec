@@ -143,6 +143,18 @@ def test_record_rows_edit_origin_and_dpi_independently(qapp, isolated_settings):
     assert window.results_table.item(0, 7).text() == "0.0"
 
 
+def test_record_columns_can_be_hidden_with_checkboxes(qapp, isolated_settings):
+    window = _make_window(qapp)
+
+    assert all(check.isChecked() for check in window.record_column_checks.values())
+    window.record_column_checks["origin"].setChecked(False)
+    window.record_column_checks["dpi"].setChecked(False)
+
+    assert window.results_table.isColumnHidden(2) is True
+    assert window.results_table.isColumnHidden(3) is True
+    assert window.results_table.isColumnHidden(0) is False
+
+
 def test_film_baseline_uses_saved_value_across_images(qapp, isolated_settings, monkeypatch, tmp_path):
     image_a = np.array([[0.0, 1000.0], [1000.0, 0.0]])
     image_b = np.full((4, 4), 900.0)

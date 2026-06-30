@@ -98,6 +98,24 @@ DISPLAY_OPTION_KEYS = {
     "Light Vertices": "display_light_vertices",
 }
 
+RECORD_COLUMNS = (
+    ("created_at", "Created At"),
+    ("image_path", "Image Path"),
+    ("origin", "Origin"),
+    ("dpi", "DPI"),
+    ("unit", "Unit"),
+    ("laser_center_x", "Laser X"),
+    ("laser_center_y", "Laser Y"),
+    ("radiation_center_x", "Radiation X"),
+    ("radiation_center_y", "Radiation Y"),
+    ("light_center_x", "Light X"),
+    ("light_center_y", "Light Y"),
+    ("radiation_edge_length_x", "Radiation W"),
+    ("radiation_edge_length_y", "Radiation H"),
+    ("radiation_area", "Radiation Area"),
+    ("light_area", "Light Area"),
+)
+
 TOOLS_ICON_DIR = Path(__file__).resolve().parent / "assets" / "icons" / "tools"
 
 
@@ -186,6 +204,7 @@ class MainWindow(QMainWindow):
         self.stage_controls: dict[str, list[QWidget]] = {}
         self.completed_stages: set[str] = set()
         self.display_option_checks: dict[str, QCheckBox] = {}
+        self.record_column_checks: dict[str, QCheckBox] = {}
 
         self.status = QStatusBar()
         self.setStatusBar(self.status)
@@ -320,6 +339,18 @@ class MainWindow(QMainWindow):
         delete_button = _button("Delete")
         delete_button.clicked.connect(self.delete_selected_records)
 
+        columns_frame = _frame("Columns")
+        columns_layout = QGridLayout()
+        columns_layout.setContentsMargins(6, 6, 6, 6)
+        columns_layout.setSpacing(4)
+        for index, (key, label) in enumerate(RECORD_COLUMNS):
+            check = QCheckBox(label)
+            check.setChecked(True)
+            check.toggled.connect(lambda checked, key=key: self._on_record_column_visibility_changed(key, checked))
+            self.record_column_checks[key] = check
+            columns_layout.addWidget(check, index // 3, index % 3)
+        columns_frame.setLayout(columns_layout)
+
         self.results_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.results_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
 
@@ -330,6 +361,7 @@ class MainWindow(QMainWindow):
         controls.addStretch(1)
 
         layout = QVBoxLayout()
+        layout.addWidget(columns_frame)
         layout.addLayout(controls)
         layout.addWidget(self.results_table)
 
@@ -1305,26 +1337,10 @@ class MainWindow(QMainWindow):
         self.results_table.clearContents()
         raw_rows = fetch_analysis_rows(self.connection)
         rows = self._display_record_rows(raw_rows)
-        columns = [
-            "created_at",
-            "image_path",
-            "origin",
-            "dpi",
-            "unit",
-            "laser_center_x",
-            "laser_center_y",
-            "radiation_center_x",
-            "radiation_center_y",
-            "light_center_x",
-            "light_center_y",
-            "radiation_edge_length_x",
-            "radiation_edge_length_y",
-            "radiation_area",
-            "light_area",
-        ]
+        columns = [key for key, _label in RECORD_COLUMNS]
         self.result_row_ids = [int(row["id"]) for row in raw_rows]
         self.results_table.setColumnCount(len(columns))
-        self.results_table.setHorizontalHeaderLabels(columns)
+        self.results_table.setHorizontalHeaderLabels([label for _key, label in RECORD_COLUMNS])
         self.results_table.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
             for column_index, column in enumerate(columns):
@@ -1333,6 +1349,7 @@ class MainWindow(QMainWindow):
                     continue
                 self.results_table.setItem(row_index, column_index, QTableWidgetItem(str(value)))
             self._set_record_row_controls(row_index, int(raw_rows[row_index]["id"]), raw_rows[row_index])
+        self._sync_record_column_visibility()
         self.results_table.resizeColumnsToContents()
         self.results_table.blockSignals(False)
 
@@ -1489,6 +1506,13 @@ class MainWindow(QMainWindow):
     def _on_record_metadata_changed(self, analysis_id: int, origin: str, dpi: float) -> None:
         update_analysis_record(self.connection, analysis_id, origin, dpi)
         self.refresh_results_table()
+
+    def _on_record_column_visibility_changed(self, key: str, checked: bool) -> None:
+        self._sync_record_column_visibility()
+
+    def _sync_record_column_visibility(self) -> None:
+        for column_index, (key, _label) in enumerate(RECORD_COLUMNS):
+            self.results_table.setColumnHidden(column_index, not self.record_column_checks[key].isChecked())
 
     def _changed_profile_lines(self, lines: dict[str, tuple[Point, Point]]) -> set[str]:
         if not self._last_profile_lines:
