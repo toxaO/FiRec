@@ -1413,6 +1413,8 @@ class MainWindow(QMainWindow):
             for plot in self.profile_plots.values():
                 plot.set_profile(None, None, ())
             return
+        if self.current_stage == "laser":
+            self._sync_laser_center_from_lines(lines)
         if self.current_stage == "radiation" and self.radiation_profile_mode == "manual" and not self._applying_radiation_profile_lines:
             self.manual_radiation_profile_lines = self._manual_radiation_profile_positions_from_view()
             self._manual_radiation_profile_dirty = self.manual_radiation_profile_lines is not None
@@ -1469,8 +1471,12 @@ class MainWindow(QMainWindow):
         self.view.setFocus()
 
     def _update_profile_visibility(self) -> None:
-        raw_visible = self.raw_profile_check.isChecked()
-        smoothed_visible = self.smoothed_profile_check.isChecked()
+        if self.current_stage == "laser":
+            raw_visible = True
+            smoothed_visible = False
+        else:
+            raw_visible = self.raw_profile_check.isChecked()
+            smoothed_visible = self.smoothed_profile_check.isChecked()
         for plot in self.profile_plots.values():
             plot.set_raw_profile_visible(raw_visible)
             plot.set_smoothed_profile_visible(smoothed_visible)
@@ -1775,7 +1781,8 @@ class MainWindow(QMainWindow):
             self.laser_status_label.setText(f"レーザー中心を設定: {_format_point(self.laser_center)}")
         if self.current_stage != "laser":
             return
-        self._set_laser_profile_cursors()
+        if "laser_x" not in self.profile_cursors or "laser_y" not in self.profile_cursors:
+            self._set_laser_profile_cursors()
         for line_name, plot in self.profile_plots.items():
             if line_name not in ("left", "bottom"):
                 plot.set_selected(False)
@@ -1791,6 +1798,18 @@ class MainWindow(QMainWindow):
             plot.set_selected(line_name == self.selected_profile_line)
             plot.set_cursors({cursor_name: cursor_value})
         self.view.set_profile_cursor_points({})
+        self.view.set_laser_center(self.laser_center)
+
+    def _sync_laser_center_from_lines(self, lines: dict[str, tuple[Point, Point]]) -> None:
+        left_line = lines.get("left")
+        bottom_line = lines.get("bottom")
+        if left_line is None or bottom_line is None:
+            return
+        x = left_line[0].x
+        y = bottom_line[0].y
+        self.profile_cursors["laser_x"] = x
+        self.profile_cursors["laser_y"] = y
+        self.laser_center = Point(x, y)
         self.view.set_laser_center(self.laser_center)
 
     def _update_laser_center_from_cursors(self) -> None:

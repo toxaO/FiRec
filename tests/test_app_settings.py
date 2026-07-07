@@ -198,3 +198,71 @@ def test_image_view_uses_japanese_floating_labels(qapp):
     texts = [item.toPlainText() for item in view.scene().items() if hasattr(item, "toPlainText")]
 
     assert "レーザー" in texts
+
+
+def test_laser_stage_updates_center_from_profile_lines(qapp, isolated_settings):
+    window = _make_window(qapp)
+    image = np.arange(25, dtype=np.float32).reshape(5, 5)
+
+    window.view.set_image(image)
+    window.image = image
+    window.activate_stage("laser")
+
+    window.view.set_profile_line_positions(left_x=1.0, bottom_y=3.0)
+
+    assert window.laser_center == Point(1.0, 3.0)
+    assert window.profile_cursors["laser_x"] == 1.0
+    assert window.profile_cursors["laser_y"] == 3.0
+
+
+def test_laser_stage_populates_left_and_bottom_profiles_only(qapp, isolated_settings):
+    window = _make_window(qapp)
+    image = np.arange(25, dtype=np.float32).reshape(5, 5)
+
+    window.view.set_image(image)
+    window.image = image
+    window.activate_stage("laser")
+
+    window.view.set_profile_line_positions(left_x=1.0, bottom_y=3.0)
+
+    assert window.left_profile_plot.values is not None
+    assert window.bottom_profile_plot.values is not None
+    assert window.left_profile_plot.positions is not None
+    assert window.bottom_profile_plot.positions is not None
+    assert window.top_profile_plot.values is None
+    assert window.right_profile_plot.values is None
+
+
+def test_laser_stage_forces_raw_profile_visible_even_when_saved_toggles_are_off(qapp, isolated_settings):
+    window = _make_window(qapp)
+    image = np.arange(25, dtype=np.float32).reshape(5, 5)
+
+    window.raw_profile_check.setChecked(False)
+    window.smoothed_profile_check.setChecked(False)
+    window.view.set_image(image)
+    window.image = image
+    window.activate_stage("laser")
+
+    assert window.left_profile_plot.raw_profile_visible is True
+    assert window.bottom_profile_plot.raw_profile_visible is True
+    assert window.left_profile_plot.smoothed_profile_visible is False
+    assert window.bottom_profile_plot.smoothed_profile_visible is False
+    assert window.left_profile_plot.values is not None
+    assert window.bottom_profile_plot.values is not None
+
+
+def test_radiation_stage_keeps_profile_visibility_toggles(qapp, isolated_settings):
+    window = _make_window(qapp)
+    image = np.arange(25, dtype=np.float32).reshape(5, 5)
+
+    window.raw_profile_check.setChecked(False)
+    window.smoothed_profile_check.setChecked(False)
+    window.view.set_image(image)
+    window.image = image
+    window.activate_stage("laser")
+    window.activate_stage("radiation")
+
+    assert window.left_profile_plot.raw_profile_visible is False
+    assert window.bottom_profile_plot.raw_profile_visible is False
+    assert window.left_profile_plot.smoothed_profile_visible is False
+    assert window.bottom_profile_plot.smoothed_profile_visible is False
