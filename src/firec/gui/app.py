@@ -494,11 +494,11 @@ class MainWindow(QMainWindow):
         ):
             self.tool_button_group.addButton(button)
 
-        self.pan_tool_button.toggled.connect(lambda checked: checked and self._set_tool_mode("pan"))
-        self.zoom_tool_button.toggled.connect(lambda checked: checked and self._set_tool_mode("zoom"))
-        self.circle_tool_button.toggled.connect(lambda checked: checked and self._set_tool_mode("circle"))
-        self.rect_tool_button.toggled.connect(lambda checked: checked and self._set_tool_mode("rect"))
-        self.ruler_tool_button.toggled.connect(lambda checked: checked and self._set_tool_mode("ruler"))
+        self.pan_tool_button.clicked.connect(lambda checked=False: self._toggle_tool_mode("pan"))
+        self.zoom_tool_button.clicked.connect(lambda checked=False: self._toggle_tool_mode("zoom"))
+        self.circle_tool_button.clicked.connect(lambda checked=False: self._toggle_tool_mode("circle"))
+        self.rect_tool_button.clicked.connect(lambda checked=False: self._toggle_tool_mode("rect"))
+        self.ruler_tool_button.clicked.connect(lambda checked=False: self._toggle_tool_mode("ruler"))
 
         tool_row = QHBoxLayout()
         tool_row.setContentsMargins(0, 0, 0, 0)
@@ -1675,6 +1675,9 @@ class MainWindow(QMainWindow):
         self._sync_tool_buttons(mode)
         self.view.set_tool_mode(mode)
 
+    def _toggle_tool_mode(self, mode: str) -> None:
+        self._set_tool_mode(None if self.tool_mode == mode else mode)
+
     def _sync_tool_buttons(self, mode: str | None) -> None:
         if not hasattr(self, "pan_tool_button"):
             return
@@ -1685,10 +1688,12 @@ class MainWindow(QMainWindow):
             "rect": self.rect_tool_button,
             "ruler": self.ruler_tool_button,
         }
+        self.tool_button_group.setExclusive(False)
         for name, button in buttons.items():
             button.blockSignals(True)
             button.setChecked(name == mode)
             button.blockSignals(False)
+        self.tool_button_group.setExclusive(True)
 
     def _clear_measurement_tool_state(self) -> None:
         self.circle_roi = None

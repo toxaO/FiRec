@@ -63,15 +63,15 @@ def test_main_window_restores_user_settings(qapp, isolated_settings):
     window.raw_profile_check.setChecked(False)
     window.smoothed_profile_check.setChecked(False)
     window.origin_combo.setCurrentIndex(window.origin_combo.findData("light"))
-    window.display_option_checks["放射線中心"].setChecked(False)
-    window.display_option_checks["光境界"].setChecked(False)
+    window.display_option_checks["照射野中心"].setChecked(False)
+    window.display_option_checks["光照射野境界"].setChecked(False)
     window.settings.sync()
     window.close()
 
     restored = _make_window(qapp)
 
-    assert restored.main_tabs.tabText(0) == "解析"
-    assert restored.main_tabs.tabText(1) == "記録"
+    assert restored.main_tabs.tabText(0) == "Analyse"
+    assert restored.main_tabs.tabText(1) == "Records"
     assert restored.analyse_dpi_mode == "manual"
     assert restored.analyse_manual_dpi == 96.0
     assert restored.film_pixel_spin.value() == 321.0
@@ -83,8 +83,8 @@ def test_main_window_restores_user_settings(qapp, isolated_settings):
     assert restored.raw_profile_check.isChecked() is False
     assert restored.smoothed_profile_check.isChecked() is False
     assert restored.origin_combo.currentData() == "light"
-    assert restored.display_option_checks["放射線中心"].isChecked() is False
-    assert restored.display_option_checks["光境界"].isChecked() is False
+    assert restored.display_option_checks["照射野中心"].isChecked() is False
+    assert restored.display_option_checks["光照射野境界"].isChecked() is False
 
 
 def test_main_window_starts_with_no_tool_selected(qapp, isolated_settings):
@@ -92,6 +92,49 @@ def test_main_window_starts_with_no_tool_selected(qapp, isolated_settings):
 
     assert window.tool_mode is None
     assert window.pan_tool_button.isChecked() is False
+
+
+def test_tool_button_click_toggles_tool_mode_off(qapp, isolated_settings):
+    window = _make_window(qapp)
+
+    window.circle_tool_button.click()
+    assert window.tool_mode == "circle"
+    assert window.circle_tool_button.isChecked() is True
+
+    window.circle_tool_button.click()
+    assert window.tool_mode is None
+    assert window.circle_tool_button.isChecked() is False
+    assert window.zoom_tool_button.isChecked() is False
+
+
+def test_tool_button_click_switches_between_tools(qapp, isolated_settings):
+    window = _make_window(qapp)
+
+    window.circle_tool_button.click()
+    assert window.tool_mode == "circle"
+
+    window.rect_tool_button.click()
+    assert window.tool_mode == "rect"
+    assert window.circle_tool_button.isChecked() is False
+    assert window.rect_tool_button.isChecked() is True
+
+
+def test_tool_toggle_clears_measurement_state(qapp, isolated_settings):
+    window = _make_window(qapp)
+
+    window.circle_tool_button.click()
+    window.circle_roi = (Point(1.0, 2.0), 3.0)
+    window.rect_roi = (Point(0.0, 0.0), Point(1.0, 1.0))
+    window.ruler_points = (Point(0.0, 0.0), Point(2.0, 2.0))
+    window.tool_result_label.setText("value")
+
+    window.circle_tool_button.click()
+
+    assert window.tool_mode is None
+    assert window.circle_roi is None
+    assert window.rect_roi is None
+    assert window.ruler_points is None
+    assert window.tool_result_label.text() == ""
 
 
 def test_reset_radiation_field_does_not_overwrite_saved_defaults(qapp, isolated_settings):
