@@ -1,4 +1,4 @@
 # AGENTS.md
 
-@/Users/tokumasa/dotfiles/templates/AGENTS_BASE.md
-@./AGENTS_PROJECT.md
+@/Users/tokumasa/dotfiles/agents/base.md
+@/Users/tokumasa/dotfiles/agents/projects/FiRec/AGENTS.md

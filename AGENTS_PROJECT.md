@@ -1,36 +1,5 @@
 # AGENTS_PROJECT.md
 
-このファイルは、そのプロジェクト固有の AI agent 向け運用メモです。
-共通ルールは dotfiles の `templates/AGENTS_BASE.md` に集約します。
+互換用の入口です。実体は `dotfiles/agents/projects/FiRec/AGENTS.md` にあります。
 
-## Goal
-- radiation領域（フィルム上黒くなっている領域）とlight領域（境界に打っている点を元に作成した矩形領域）を画像上で鑑別し、それぞれのパラメータを算出して記録する。
-
-## Context
-- pythonと関連ライブラリを使用し、実用動作はwindows用の実行ファイルを用意し、スタンドアローン環境で行う。
-- 記録はSQLiteを使用し、解析日時順にcsvでの出力を可能とする。
-
-## Commands
-- このディレクトリでよく使うコマンドを書く。
-- 各コマンドが何をするかを書く。
-- 変更後の確認に使うコマンドがあれば書く。
-
-例:
-- `rtk npm test`: テスト実行。
-- `rtk make lint`: lint 実行。
-- `rtk pytest path/to/test_file.py`: 特定テストの確認。
-
-## Conventions
-- 命名、フォーマット、レビュー方針、設計ルールを書く。
-- 守るべき既存パターンと、避けるべきパターンを書く。
-- フレームワーク固有の流儀があるならここに書く。
-
-## Risks
-- 壊しやすい箇所、不安定な領域、移行中の仕様を書く。
-- 一見簡単でも実際には事故りやすいポイントを書く。
-- 触る前に確認すべきファイルや手順があれば書く。
-
-## Open Questions
-- まだ確定していないことを書く。
-- agent が推測で進めず、止まって確認すべき条件を書く。
-- 将来見直したい運用ルールがあれば書く。
+@/Users/tokumasa/dotfiles/agents/projects/FiRec/AGENTS.md
