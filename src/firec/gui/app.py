@@ -1,5 +1,6 @@
 import sys
 from contextlib import contextmanager
+from collections.abc import Callable
 from math import atan2, degrees, hypot
 from pathlib import Path
 
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
     QStatusBar,
     QRadioButton,
     QSpinBox,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -96,6 +98,22 @@ DISPLAY_OPTION_KEYS = {
     "光照射野中心": "display_light_center",
     "光照射野長さ": "display_light_length",
     "光照射野頂点": "display_light_vertices",
+}
+
+DISPLAY_STYLE_DEFAULTS = {
+    "line_width": 2,
+    "point_radius": 5,
+    "point_fill_opacity": 100,
+    "point_labels": True,
+    "dash_interval": 7,
+}
+
+DISPLAY_STYLE_KEYS = {
+    "line_width": "display_line_width",
+    "point_radius": "display_point_radius",
+    "point_fill_opacity": "display_point_fill_opacity",
+    "point_labels": "display_point_labels",
+    "dash_interval": "display_dash_interval_px",
 }
 
 RECORD_COLUMNS = (
@@ -732,31 +750,142 @@ class MainWindow(QMainWindow):
         return frame, [self.origin_combo, save_button]
 
     def _display_options_frame(self) -> QGroupBox:
-        options = (
+        self.line_width_spin = self._display_style_spinbox(1, 20, DISPLAY_STYLE_DEFAULTS["line_width"])
+        self.point_radius_spin = self._display_style_spinbox(1, 20, DISPLAY_STYLE_DEFAULTS["point_radius"])
+        self.point_fill_opacity_spin = self._display_style_spinbox(0, 100, DISPLAY_STYLE_DEFAULTS["point_fill_opacity"], " %")
+        self.dash_interval_spin = self._display_style_spinbox(1, 50, DISPLAY_STYLE_DEFAULTS["dash_interval"])
+        self.point_label_check = QCheckBox("点のラベル")
+        self.point_label_check.setChecked(DISPLAY_STYLE_DEFAULTS["point_labels"])
+        self.point_fill_opacity_spin.setSingleStep(10)
+
+        self.line_width_spin.valueChanged.connect(self.view.set_line_width)
+        self.line_width_spin.valueChanged.connect(lambda value: self._save_display_settings())
+        self._wire_spinbox_commit(self.line_width_spin, self._save_display_settings)
+
+        self.point_radius_spin.valueChanged.connect(self.view.set_point_radius)
+        self.point_radius_spin.valueChanged.connect(lambda value: self._save_display_settings())
+        self._wire_spinbox_commit(self.point_radius_spin, self._save_display_settings)
+
+        self.point_fill_opacity_spin.valueChanged.connect(self.view.set_point_fill_opacity)
+        self.point_fill_opacity_spin.valueChanged.connect(lambda value: self._save_display_settings())
+        self._wire_spinbox_commit(self.point_fill_opacity_spin, self._save_display_settings)
+
+        self.point_label_check.toggled.connect(self.view.set_show_point_labels)
+        self.point_label_check.toggled.connect(lambda checked: self._save_display_settings())
+        self.view.set_show_point_labels(self.point_label_check.isChecked())
+
+        self.dash_interval_spin.valueChanged.connect(self.view.set_dash_interval)
+        self.dash_interval_spin.valueChanged.connect(lambda value: self._save_display_settings())
+        self._wire_spinbox_commit(self.dash_interval_spin, self._save_display_settings)
+
+        common_style_widget = QWidget()
+        common_style_layout = QVBoxLayout()
+        common_style_layout.setContentsMargins(0, 0, 0, 0)
+        common_style_layout.setSpacing(0)
+        common_line_row = QHBoxLayout()
+        common_line_row.setContentsMargins(0, 0, 0, 0)
+        common_line_row.setSpacing(0)
+        common_line_row.addWidget(QLabel("線幅"))
+        common_line_row.addWidget(self.line_width_spin)
+        common_line_row.addStretch(1)
+        common_style_layout.addLayout(common_line_row)
+        common_dash_row = QHBoxLayout()
+        common_dash_row.setContentsMargins(0, 0, 0, 0)
+        common_dash_row.setSpacing(0)
+        common_dash_row.addWidget(QLabel("点線間隔"))
+        common_dash_row.addWidget(self.dash_interval_spin)
+        common_dash_row.addStretch(1)
+        common_style_layout.addLayout(common_dash_row)
+        common_point_row = QHBoxLayout()
+        common_point_row.setContentsMargins(0, 0, 0, 0)
+        common_point_row.setSpacing(0)
+        common_point_row.addWidget(QLabel("点の半径"))
+        common_point_row.addWidget(self.point_radius_spin)
+        common_point_row.addStretch(1)
+        common_style_layout.addLayout(common_point_row)
+        common_opacity_row = QHBoxLayout()
+        common_opacity_row.setContentsMargins(0, 0, 0, 0)
+        common_opacity_row.setSpacing(0)
+        common_opacity_row.addWidget(QLabel("点の塗りつぶし透明度"))
+        common_opacity_row.addWidget(self.point_fill_opacity_spin)
+        common_opacity_row.addStretch(1)
+        common_style_layout.addLayout(common_opacity_row)
+        common_label_row = QHBoxLayout()
+        common_label_row.setContentsMargins(0, 0, 0, 0)
+        common_label_row.setSpacing(0)
+        common_label_row.addWidget(self.point_label_check)
+        common_label_row.addStretch(1)
+        common_style_layout.addLayout(common_label_row)
+        common_style_widget.setLayout(common_style_layout)
+
+        laser_widget = QWidget()
+        laser_layout = QVBoxLayout()
+        laser_layout.setContentsMargins(0, 0, 0, 0)
+        laser_layout.setSpacing(0)
+        laser_layout.addWidget(self._display_check_grid((
             ("レーザー中心", self.view.set_show_laser_center),
+        )))
+        laser_widget.setLayout(laser_layout)
+
+        radiation_widget = QWidget()
+        radiation_layout = QVBoxLayout()
+        radiation_layout.setContentsMargins(0, 0, 0, 0)
+        radiation_layout.setSpacing(0)
+        radiation_layout.addWidget(self._display_check_grid((
             ("照射野境界", self.view.set_show_radiation_edges),
             ("照射野中心", self.view.set_show_radiation_center),
             ("照射野面積", self.view.set_show_radiation_area),
             ("照射野長さ", self.view.set_show_radiation_edge_lengths),
             ("照射野頂点", self.view.set_show_radiation_vertices),
             ("照射野境界点", self.view.set_show_radiation_points),
+        )))
+        radiation_widget.setLayout(radiation_layout)
+
+        light_widget = QWidget()
+        light_layout = QVBoxLayout()
+        light_layout.setContentsMargins(0, 0, 0, 0)
+        light_layout.setSpacing(0)
+        light_layout.addWidget(self._display_check_grid((
             ("光照射野境界", self.view.set_show_light_edges),
             ("光照射野中心", self.view.set_show_light_center),
             ("光照射野長さ", self.view.set_show_light_edge_lengths),
             ("光照射野頂点", self.view.set_show_light_vertices),
-        )
-        visibility_layout = QGridLayout()
-        for index, (label, callback) in enumerate(options):
-            check = QCheckBox(label)
-            check.setChecked(True)
-            check.toggled.connect(callback)
-            check.toggled.connect(
-                lambda checked, label=label: self._on_display_option_changed(label, checked)
-            )
-            self.display_option_checks[label] = check
-            visibility_layout.addWidget(check, index // 2, index % 2)
+        )))
+        light_widget.setLayout(light_layout)
+
+        display_layout = QVBoxLayout()
+        display_layout.setContentsMargins(0, 0, 0, 0)
+        display_layout.setSpacing(0)
+        display_layout.addWidget(self._compact_section(*self._collapsible_section("点と線", common_style_widget, expanded=False)))
+        display_layout.addWidget(self._compact_section(*self._collapsible_section("レーザー", laser_widget, expanded=False)))
+        display_layout.addWidget(self._compact_section(*self._collapsible_section("照射野", radiation_widget, expanded=False)))
+        display_layout.addWidget(self._compact_section(*self._collapsible_section("光照射野", light_widget, expanded=False)))
+
+        display_content = QWidget()
+        display_content.setLayout(display_layout)
+
+        display_scroll = QScrollArea()
+        display_scroll.setWidget(display_content)
+        display_scroll.setWidgetResizable(True)
+        display_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        display_scroll.setFrameShape(QFrame.NoFrame)
+        display_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        display_scroll.setMaximumHeight(300)
+
         frame = _frame("表示オプション")
-        frame.setLayout(visibility_layout)
+        frame_layout = QVBoxLayout()
+        frame_layout.setContentsMargins(0, 0, 0, 0)
+        frame_layout.setSpacing(0)
+        frame_layout.addWidget(display_scroll)
+        frame.setLayout(frame_layout)
+        return frame
+
+    def _compact_section(self, frame: QGroupBox, toggle: QToolButton) -> QGroupBox:
+        frame.setStyleSheet(
+            "QGroupBox { margin-top: 0px; padding-top: 0px; }"
+            "QGroupBox::title { subcontrol-origin: margin; left: 0px; padding: 0px; }"
+        )
+        del toggle
         return frame
 
     def _collapsible_section(self, title: str, content: QWidget, expanded: bool = False) -> tuple[QGroupBox, QToolButton]:
@@ -771,7 +900,7 @@ class MainWindow(QMainWindow):
         body = QWidget()
         body_layout = QVBoxLayout()
         body_layout.setContentsMargins(0, 0, 0, 0)
-        body_layout.setSpacing(2)
+        body_layout.setSpacing(0)
         body_layout.addWidget(content)
         body.setLayout(body_layout)
         body.setVisible(expanded)
@@ -784,7 +913,7 @@ class MainWindow(QMainWindow):
 
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
+        layout.setSpacing(0)
         layout.addWidget(toggle)
         layout.addWidget(body)
 
@@ -792,6 +921,31 @@ class MainWindow(QMainWindow):
         frame.setLayout(layout)
         _sync(expanded)
         return frame, toggle
+
+    def _display_check_grid(self, items: tuple[tuple[str, Callable[[bool], None]], ...]) -> QWidget:
+        widget = QWidget()
+        layout = QGridLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setHorizontalSpacing(0)
+        layout.setVerticalSpacing(0)
+        for index, (label, callback) in enumerate(items):
+            check = QCheckBox(label)
+            check.setChecked(True)
+            check.toggled.connect(callback)
+            check.toggled.connect(lambda checked, label=label: self._on_display_option_changed(label, checked))
+            self.display_option_checks[label] = check
+            layout.addWidget(check, index // 2, index % 2)
+        widget.setLayout(layout)
+        return widget
+
+    def _display_style_spinbox(self, minimum: int, maximum: int, value: int, suffix: str = " px") -> QSpinBox:
+        spin = QSpinBox()
+        spin.setRange(minimum, maximum)
+        spin.setValue(value)
+        spin.setSingleStep(1)
+        spin.setSuffix(suffix)
+        spin.setMaximumWidth(110)
+        return spin
 
     def _step_nav_buttons(self) -> QHBoxLayout:
         step_label = QLabel("解析ステップ")
@@ -1066,9 +1220,25 @@ class MainWindow(QMainWindow):
                 self.origin_combo,
                 self._settings_choice("analyse_result_origin", ("laser", "radiation", "light"), SETTING_DEFAULTS["analyse_result_origin"]),
             )
+            line_width = self.settings.value(DISPLAY_STYLE_KEYS["line_width"], None)
+            if line_width is None:
+                for legacy_key in (
+                    "display_profile_line_width",
+                    "display_radiation_edge_width",
+                    "display_light_edge_width",
+                    "display_laser_center_width",
+                ):
+                    line_width = self.settings.value(legacy_key, None)
+                    if line_width is not None:
+                        break
+            self.line_width_spin.setValue(int(line_width) if line_width is not None else DISPLAY_STYLE_DEFAULTS["line_width"])
+            self.point_radius_spin.setValue(self._settings_int(DISPLAY_STYLE_KEYS["point_radius"], DISPLAY_STYLE_DEFAULTS["point_radius"]))
+            self.point_fill_opacity_spin.setValue(self._settings_int(DISPLAY_STYLE_KEYS["point_fill_opacity"], DISPLAY_STYLE_DEFAULTS["point_fill_opacity"]))
+            self.point_label_check.setChecked(self._settings_bool(DISPLAY_STYLE_KEYS["point_labels"], DISPLAY_STYLE_DEFAULTS["point_labels"]))
             for label, check in self.display_option_checks.items():
                 key = DISPLAY_OPTION_KEYS[label]
                 check.setChecked(self._settings_bool(key, True))
+            self.dash_interval_spin.setValue(self._settings_int(DISPLAY_STYLE_KEYS["dash_interval"], DISPLAY_STYLE_DEFAULTS["dash_interval"]))
             for key, check in self.record_column_checks.items():
                 check.setChecked(self._settings_bool(RECORD_COLUMN_SETTING_KEYS[key], True))
             self._sync_analyse_dpi_ui()
@@ -1505,9 +1675,8 @@ class MainWindow(QMainWindow):
         self._update_profile_visibility()
 
     def _on_display_option_changed(self, label: str, checked: bool) -> None:
-        if self._settings_write_suppressed:
-            return
-        self.settings.setValue(DISPLAY_OPTION_KEYS[label], checked)
+        del label, checked
+        self._save_display_settings()
 
     def _on_radiation_setting_changed(self) -> None:
         self._save_radiation_settings()
@@ -1517,6 +1686,17 @@ class MainWindow(QMainWindow):
         if not self._settings_write_suppressed:
             self.settings.setValue("analyse_result_origin", self.origin_combo.currentData() or "laser")
         self._update_result_label()
+
+    def _save_display_settings(self) -> None:
+        if self._settings_write_suppressed:
+            return
+        for label, check in self.display_option_checks.items():
+            self.settings.setValue(DISPLAY_OPTION_KEYS[label], check.isChecked())
+        self.settings.setValue(DISPLAY_STYLE_KEYS["line_width"], self.line_width_spin.value())
+        self.settings.setValue(DISPLAY_STYLE_KEYS["point_radius"], self.point_radius_spin.value())
+        self.settings.setValue(DISPLAY_STYLE_KEYS["point_fill_opacity"], self.point_fill_opacity_spin.value())
+        self.settings.setValue(DISPLAY_STYLE_KEYS["point_labels"], self.point_label_check.isChecked())
+        self.settings.setValue(DISPLAY_STYLE_KEYS["dash_interval"], self.dash_interval_spin.value())
 
     def _set_record_row_controls(self, row_index: int, analysis_id: int, row: dict[str, object]) -> None:
         origin_widget = self.results_table.cellWidget(row_index, 2)

@@ -62,6 +62,7 @@ class ImageView(QGraphicsView):
         self._light_item: QGraphicsPolygonItem | None = None
         self._profile_line_items: list[QGraphicsItem] = []
         self._profile_cursor_point_items: list[QGraphicsItem] = []
+        self._profile_cursor_points: dict[str, Point] = {}
         self._point_items: list[QGraphicsItem] = []
         self._center_point_items: list[QGraphicsItem] = []
         self._vertex_items: list[QGraphicsItem] = []
@@ -104,6 +105,11 @@ class ImageView(QGraphicsView):
         self.show_light_edge_lengths = True
         self.show_light_vertices = True
         self.show_laser_center = True
+        self.show_point_labels = True
+        self.line_width = 2
+        self.point_radius = 5
+        self.point_fill_opacity = 100
+        self.dash_interval = 7
         self.editing_enabled = True
         self._tool_mode: str | None = None
         self._circle_roi: tuple[Point, float] | None = None
@@ -141,6 +147,7 @@ class ImageView(QGraphicsView):
         self._handle_items = []
         self._profile_line_items = []
         self._profile_cursor_point_items = []
+        self._profile_cursor_points = {}
         self._point_items = []
         self._center_point_items = []
         self._vertex_items = []
@@ -196,6 +203,40 @@ class ImageView(QGraphicsView):
     def set_profile_lines_editable(self, editable: bool) -> None:
         self.profile_lines_editable = editable
 
+    def set_line_width(self, width: int) -> None:
+        self.line_width = max(1, int(width))
+        self._draw_profile_lines()
+        self._sync_item_visibility()
+        self._draw_selection_overlays()
+        self._draw_edge_length_lines()
+
+    def set_profile_line_width(self, width: int) -> None:
+        self.set_line_width(width)
+
+    def set_point_radius(self, radius: int) -> None:
+        self.point_radius = max(1, int(radius))
+        self._draw_laser_center()
+        self._draw_center_points()
+        self._draw_radiation_points()
+        self._draw_vertices()
+        self._draw_profile_cursor_point_items()
+
+    def set_point_fill_opacity(self, opacity: int) -> None:
+        self.point_fill_opacity = max(0, min(100, int(opacity)))
+        self._draw_laser_center()
+        self._draw_center_points()
+        self._draw_radiation_points()
+        self._draw_vertices()
+        self._draw_profile_cursor_point_items()
+
+    def set_show_point_labels(self, show: bool) -> None:
+        self.show_point_labels = show
+        self._draw_laser_center()
+        self._draw_center_points()
+        self._draw_radiation_points()
+        self._draw_vertices()
+        self._draw_profile_cursor_point_items()
+
     def set_visible_profile_lines(self, names: set[str] | None) -> None:
         self.visible_profile_lines = names
         self._draw_profile_lines()
@@ -243,23 +284,8 @@ class ImageView(QGraphicsView):
         self._set_selected_profile_line(line_name)
 
     def set_profile_cursor_points(self, points: dict[str, Point]) -> None:
-        self._clear_profile_cursor_point_items()
-        for name, point in points.items():
-            radius = 5
-            dot = self.scene().addEllipse(
-                point.x - radius,
-                point.y - radius,
-                radius * 2,
-                radius * 2,
-                QPen(Qt.white, 2),
-                QBrush(POINT_COLOR),
-            )
-            label = self.scene().addText(PROFILE_POINT_LABELS.get(name, name))
-            label.setDefaultTextColor(QColor(255, 255, 255))
-            label.setPos(point.x + 6, point.y + 6)
-            dot.setZValue(13)
-            label.setZValue(13)
-            self._profile_cursor_point_items.extend([dot, label])
+        self._profile_cursor_points = points
+        self._draw_profile_cursor_point_items()
 
     def set_result_center_points(self, points: dict[str, Point]) -> None:
         self.center_points = points
@@ -323,21 +349,23 @@ class ImageView(QGraphicsView):
                 continue
             if name == "laser" and not self.show_laser_center:
                 continue
-            radius = 5
+            radius = self.point_radius
             dot = self.scene().addEllipse(
                 point.x - radius,
                 point.y - radius,
                 radius * 2,
                 radius * 2,
-                QPen(Qt.white, 1),
-                QBrush(LIGHT_EDGE_SELECTED_COLOR if name == "light" else RADIATION_COLOR),
+                QPen(Qt.NoPen),
+                QBrush(self._point_fill_color(LIGHT_EDGE_SELECTED_COLOR if name == "light" else RADIATION_COLOR)),
             )
-            label = self.scene().addText(CENTER_POINT_LABELS.get(name, name))
-            label.setDefaultTextColor(QColor(255, 255, 255))
-            label.setPos(point.x + 6, point.y + 6)
             dot.setZValue(14)
-            label.setZValue(14)
-            self._center_point_items.extend([dot, label])
+            self._center_point_items.append(dot)
+            if self.show_point_labels:
+                label = self.scene().addText(CENTER_POINT_LABELS.get(name, name))
+                label.setDefaultTextColor(QColor(255, 255, 255))
+                label.setPos(point.x + radius + 1, point.y + radius + 1)
+                label.setZValue(14)
+                self._center_point_items.append(label)
 
     def set_radiation_points(self, points: dict[str, Point]) -> None:
         self.radiation_points = points
@@ -388,6 +416,22 @@ class ImageView(QGraphicsView):
         self.show_laser_center = show
         self._draw_laser_center()
 
+    def set_radiation_edge_width(self, width: int) -> None:
+        self.set_line_width(width)
+
+    def set_light_edge_width(self, width: int) -> None:
+        self.set_line_width(width)
+
+    def set_dash_interval(self, interval: int) -> None:
+        self.dash_interval = max(1, int(interval))
+        self._draw_profile_lines()
+        self._sync_item_visibility()
+        self._draw_selection_overlays()
+        self._draw_edge_length_lines()
+
+    def _dash_pattern(self) -> list[int]:
+        return [10, self.dash_interval]
+
     def set_radiation_rect(self, rect: RotatedRect | None, reset_profile_lines: bool = True) -> None:
         self.radiation_rect = rect
         self.radiation_polygon = None if rect is None else rect.ordered_points()
@@ -405,7 +449,7 @@ class ImageView(QGraphicsView):
         self._radiation_item = self._set_polygon_item(
             self._radiation_item,
             rect,
-            _dashed_pen(RADIATION_COLOR),
+            _dashed_pen(RADIATION_COLOR, self.line_width, self._dash_pattern()),
             QBrush(Qt.NoBrush),
         )
         self._sync_item_visibility()
@@ -426,7 +470,7 @@ class ImageView(QGraphicsView):
         self._radiation_item = self._set_polygon_points_item(
             self._radiation_item,
             points,
-            _dashed_pen(RADIATION_COLOR),
+            _dashed_pen(RADIATION_COLOR, self.line_width, self._dash_pattern()),
             QBrush(Qt.NoBrush),
         )
         self._sync_item_visibility()
@@ -450,7 +494,7 @@ class ImageView(QGraphicsView):
         self._light_item = self._set_polygon_item(
             self._light_item,
             rect,
-            _dashed_pen(LIGHT_EDGE_COLOR, 2, [3, 3]),
+            _dashed_pen(LIGHT_EDGE_COLOR, self.line_width, self._dash_pattern()),
             QBrush(Qt.NoBrush),
         )
         self._sync_item_visibility()
@@ -463,7 +507,7 @@ class ImageView(QGraphicsView):
         self._light_item = self._set_polygon_points_item(
             self._light_item,
             points,
-            _dashed_pen(LIGHT_EDGE_COLOR, 2, [3, 3]),
+            _dashed_pen(LIGHT_EDGE_COLOR, self.line_width, self._dash_pattern()),
             QBrush(Qt.NoBrush),
         )
         self._sync_item_visibility()
@@ -779,7 +823,7 @@ class ImageView(QGraphicsView):
                 start.y,
                 end.x,
                 end.y,
-                _dashed_pen(LIGHT_EDGE_SELECTED_COLOR, 3, [3, 3]),
+                _dashed_pen(LIGHT_EDGE_SELECTED_COLOR, self.line_width, self._dash_pattern()),
             )
             self._target_items.append(item)
 
@@ -787,7 +831,11 @@ class ImageView(QGraphicsView):
         if self._radiation_item is not None:
             visible = self.show_radiation_edges or self.show_radiation_area
             self._radiation_item.setVisible(visible)
-            self._radiation_item.setPen(_dashed_pen(RADIATION_COLOR) if self.show_radiation_edges else QPen(Qt.NoPen))
+            self._radiation_item.setPen(
+                _dashed_pen(RADIATION_COLOR, self.line_width, self._dash_pattern())
+                if self.show_radiation_edges
+                else QPen(Qt.NoPen)
+            )
             self._radiation_item.setBrush(QBrush(RADIATION_FILL_COLOR) if self.show_radiation_area else QBrush(Qt.NoBrush))
             self._radiation_item.setOpacity(1.0)
         if self._light_item is not None:
@@ -812,9 +860,9 @@ class ImageView(QGraphicsView):
             if self.active_profile_orientation is not None and name != self.active_profile_orientation:
                 continue
             start, end = points
-            width = 3 if name == self.selected_profile_line else 2
+            width = self.line_width
             color = PROFILE_LINE_SELECTED_COLOR if name == self.selected_profile_line else PROFILE_LINE_COLOR
-            item = self.scene().addLine(start.x, start.y, end.x, end.y, _dashed_pen(color, width))
+            item = self.scene().addLine(start.x, start.y, end.x, end.y, _dashed_pen(color, width, self._dash_pattern()))
             item.setZValue(10)
             self._profile_line_items.append(item)
 
@@ -827,6 +875,27 @@ class ImageView(QGraphicsView):
         for item in self._profile_cursor_point_items:
             self.scene().removeItem(item)
         self._profile_cursor_point_items = []
+
+    def _draw_profile_cursor_point_items(self) -> None:
+        self._clear_profile_cursor_point_items()
+        for name, point in self._profile_cursor_points.items():
+            radius = self.point_radius
+            dot = self.scene().addEllipse(
+                point.x - radius,
+                point.y - radius,
+                radius * 2,
+                radius * 2,
+                QPen(Qt.NoPen),
+                QBrush(self._point_fill_color(POINT_COLOR)),
+            )
+            dot.setZValue(13)
+            self._profile_cursor_point_items.append(dot)
+            if self.show_point_labels:
+                label = self.scene().addText(PROFILE_POINT_LABELS.get(name, name))
+                label.setDefaultTextColor(QColor(255, 255, 255))
+                label.setPos(point.x + radius + 1, point.y + radius + 1)
+                label.setZValue(13)
+                self._profile_cursor_point_items.append(label)
 
     def _clear_center_point_items(self) -> None:
         for item in self._center_point_items:
@@ -941,7 +1010,7 @@ class ImageView(QGraphicsView):
                 continue
             left_mid, right_mid, top_mid, bottom_mid = _edge_length_points(points)
             for start, end in ((left_mid, right_mid), (top_mid, bottom_mid)):
-                item = self.scene().addLine(start.x, start.y, end.x, end.y, _dashed_pen(color, 1, [5, 4]))
+                item = self.scene().addLine(start.x, start.y, end.x, end.y, _dashed_pen(color, self.line_width, self._dash_pattern()))
                 item.setZValue(11)
                 self._edge_length_items.append(item)
 
@@ -957,43 +1026,47 @@ class ImageView(QGraphicsView):
             if name == "light" and self.active_field != "light":
                 continue
             for label_text, point in zip(VERTEX_LABELS, points, strict=True):
-                radius = 3
+                radius = self.point_radius
                 dot = self.scene().addEllipse(
                     point.x - radius,
                     point.y - radius,
                     radius * 2,
                     radius * 2,
                     QPen(color, 1),
-                    QBrush(color),
+                    QBrush(self._point_fill_color(color)),
                 )
-                label = self.scene().addText(label_text)
-                label.setDefaultTextColor(color)
-                label.setPos(point.x + 4, point.y + 4)
                 dot.setZValue(12)
-                label.setZValue(12)
-                self._vertex_items.extend([dot, label])
+                self._vertex_items.append(dot)
+                if self.show_point_labels:
+                    label = self.scene().addText(label_text)
+                    label.setDefaultTextColor(color)
+                    label.setPos(point.x + radius + 1, point.y + radius + 1)
+                    label.setZValue(12)
+                    self._vertex_items.append(label)
 
     def _draw_laser_center(self) -> None:
         self._clear_laser_center_items()
         if self.laser_center is None or not self.show_laser_center:
             return
         point = self.laser_center
-        radius = 6
+        radius = self.point_radius
         items = [
-            self.scene().addLine(point.x - 10, point.y, point.x + 10, point.y, QPen(POINT_COLOR, 2)),
-            self.scene().addLine(point.x, point.y - 10, point.x, point.y + 10, QPen(POINT_COLOR, 2)),
+            self.scene().addLine(point.x - 10, point.y, point.x + 10, point.y, QPen(POINT_COLOR, 1)),
+            self.scene().addLine(point.x, point.y - 10, point.x, point.y + 10, QPen(POINT_COLOR, 1)),
             self.scene().addEllipse(
                 point.x - radius,
                 point.y - radius,
                 radius * 2,
                 radius * 2,
-                QPen(Qt.white, 1),
-                QBrush(POINT_COLOR),
+                QPen(Qt.NoPen),
+                QBrush(self._point_fill_color(POINT_COLOR)),
             ),
-            self.scene().addText("レーザー"),
         ]
-        items[-1].setDefaultTextColor(POINT_COLOR)
-        items[-1].setPos(point.x + 7, point.y + 7)
+        if self.show_point_labels:
+            label = self.scene().addText("レーザー")
+            label.setDefaultTextColor(POINT_COLOR)
+            label.setPos(point.x + radius + 1, point.y + radius + 1)
+            items.append(label)
         for item in items:
             item.setZValue(15)
             self._laser_center_items.append(item)
@@ -1003,29 +1076,36 @@ class ImageView(QGraphicsView):
         if not self.show_radiation_points:
             return
         for name, point in self.radiation_points.items():
-            radius = 4
+            radius = self.point_radius
             dot = self.scene().addEllipse(
                 point.x - radius,
                 point.y - radius,
                 radius * 2,
                 radius * 2,
-                QPen(POINT_COLOR, 1),
-                QBrush(POINT_COLOR),
+                QPen(Qt.NoPen),
+                QBrush(self._point_fill_color(POINT_COLOR)),
             )
-            label = self.scene().addText(CENTER_POINT_LABELS.get(name, name))
-            font = QFont()
-            font.setPointSize(14)
-            label.setFont(font)
-            label.setDefaultTextColor(POINT_COLOR)
-            label.setPos(point.x + 5, point.y + 5)
             dot.setZValue(12)
-            label.setZValue(12)
-            self._point_items.extend([dot, label])
+            self._point_items.append(dot)
+            if self.show_point_labels:
+                label = self.scene().addText(CENTER_POINT_LABELS.get(name, name))
+                font = QFont()
+                font.setPointSize(14)
+                label.setFont(font)
+                label.setDefaultTextColor(POINT_COLOR)
+                label.setPos(point.x + radius + 1, point.y + radius + 1)
+                label.setZValue(12)
+                self._point_items.append(label)
 
     def _clear_point_items(self) -> None:
         for item in self._point_items:
             self.scene().removeItem(item)
         self._point_items = []
+
+    def _point_fill_color(self, base_color: QColor) -> QColor:
+        color = QColor(base_color)
+        color.setAlpha(round(color.alpha() * self.point_fill_opacity / 100))
+        return color
 
     def _emit_profile_lines_changed(self) -> None:
         if self.on_profile_lines_changed is None:

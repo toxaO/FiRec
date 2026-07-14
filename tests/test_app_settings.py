@@ -66,6 +66,11 @@ def test_main_window_restores_user_settings(qapp, isolated_settings):
     window.origin_combo.setCurrentIndex(window.origin_combo.findData("light"))
     window.display_option_checks["照射野中心"].setChecked(False)
     window.display_option_checks["光照射野境界"].setChecked(False)
+    window.line_width_spin.setValue(4)
+    window.point_radius_spin.setValue(4)
+    window.point_fill_opacity_spin.setValue(42)
+    window.point_label_check.setChecked(False)
+    window.dash_interval_spin.setValue(9)
     window.settings.sync()
     window.close()
 
@@ -84,8 +89,19 @@ def test_main_window_restores_user_settings(qapp, isolated_settings):
     assert restored.raw_profile_check.isChecked() is False
     assert restored.smoothed_profile_check.isChecked() is False
     assert restored.origin_combo.currentData() == "light"
+    assert restored.line_width_spin.value() == 4
+    assert restored.point_radius_spin.value() == 4
+    assert restored.point_fill_opacity_spin.value() == 42
+    assert restored.point_fill_opacity_spin.singleStep() == 10
+    assert restored.point_label_check.isChecked() is False
     assert restored.display_option_checks["照射野中心"].isChecked() is False
     assert restored.display_option_checks["光照射野境界"].isChecked() is False
+    assert restored.view.line_width == 4
+    assert restored.view.point_radius == 4
+    assert restored.view.point_fill_opacity == 42
+    assert restored.view.show_point_labels is False
+    assert restored.dash_interval_spin.value() == 9
+    assert restored.view.dash_interval == 9
 
 
 def test_manual_dpi_updates_on_focus_loss(qapp, isolated_settings):
@@ -271,6 +287,72 @@ def test_image_view_uses_japanese_floating_labels(qapp):
     texts = [item.toPlainText() for item in view.scene().items() if hasattr(item, "toPlainText")]
 
     assert "レーザー" in texts
+
+
+def test_image_view_applies_custom_display_styles(qapp):
+    view = ImageView()
+    view.set_image(np.zeros((8, 8), dtype=np.float32))
+    view.set_laser_center(Point(2.0, 3.0))
+    view.set_line_width(4)
+    view.set_point_radius(4)
+    view.set_point_fill_opacity(42)
+    view.set_dash_interval(11)
+    view.center_points = {"radiation": Point(1.0, 1.0)}
+    view._draw_center_points()
+    view.set_radiation_points({"a": Point(3.0, 3.0)})
+    view.set_radiation_rect(RotatedRect(Point(4.0, 4.0), width=2.0, height=2.0, angle=0))
+
+    line_items = [item for item in view.scene().items() if hasattr(item, "line")]
+    polygon_items = [item for item in view.scene().items() if hasattr(item, "polygon")]
+    ellipse_items = [item for item in view.scene().items() if hasattr(item, "rect")]
+
+    assert any(item.pen().width() == 4 for item in line_items)
+    assert any(item.pen().dashPattern() == [10.0, 11.0] for item in polygon_items)
+    assert ellipse_items
+    assert any(item.rect().width() == 8 for item in ellipse_items)
+    assert any(item.brush().color().alpha() == 107 for item in ellipse_items)
+
+
+def test_point_labels_can_be_hidden_and_restored(qapp):
+    view = ImageView()
+    view.set_image(np.zeros((8, 8), dtype=np.float32))
+    view.set_laser_center(Point(2.0, 3.0))
+    view.set_result_center_points({"radiation": Point(1.0, 1.0)})
+    view.set_radiation_points({"a": Point(3.0, 3.0)})
+    view.set_radiation_rect(RotatedRect(Point(4.0, 4.0), width=2.0, height=2.0, angle=0))
+    view.set_profile_cursor_points({"L1": Point(2.0, 2.0)})
+    assert any(hasattr(item, "toPlainText") for item in view.scene().items())
+
+    view.set_show_point_labels(False)
+    assert not any(hasattr(item, "toPlainText") for item in view.scene().items())
+
+    view.set_show_point_labels(True)
+    assert any(hasattr(item, "toPlainText") for item in view.scene().items())
+
+
+def test_profile_cursor_points_follow_point_settings_immediately(qapp):
+    view = ImageView()
+    view.set_image(np.zeros((8, 8), dtype=np.float32))
+    view.set_profile_cursor_points({"L1": Point(2.0, 2.0)})
+    view.set_point_radius(6)
+    view.set_point_fill_opacity(40)
+
+    ellipse_items = [item for item in view.scene().items() if hasattr(item, "rect")]
+
+    assert any(item.rect().width() == 12 for item in ellipse_items)
+    assert any(item.brush().color().alpha() == 102 for item in ellipse_items)
+
+
+def test_selected_profile_line_uses_configured_width(qapp):
+    view = ImageView()
+    view.set_image(np.zeros((8, 8), dtype=np.float32))
+    view.set_line_width(5)
+    view.select_profile_line("top")
+
+    line_items = [item for item in view.scene().items() if hasattr(item, "line")]
+
+    assert line_items
+    assert all(item.pen().width() == 5 for item in line_items)
 
 
 def test_laser_stage_updates_center_from_profile_lines(qapp, isolated_settings):
