@@ -6,6 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import numpy as np
 import pytest
 from PySide6.QtCore import QSettings
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from firec.gui import app as app_module
@@ -85,6 +86,35 @@ def test_main_window_restores_user_settings(qapp, isolated_settings):
     assert restored.origin_combo.currentData() == "light"
     assert restored.display_option_checks["照射野中心"].isChecked() is False
     assert restored.display_option_checks["光照射野境界"].isChecked() is False
+
+
+def test_manual_dpi_updates_on_focus_loss(qapp, isolated_settings):
+    window = _make_window(qapp)
+    window.show()
+    qapp.processEvents()
+
+    window._set_analyse_dpi_mode("manual")
+    window.dpi_spin.setFocus()
+    qapp.processEvents()
+
+    window.dpi_spin.lineEdit().selectAll()
+    QTest.keyClicks(window.dpi_spin.lineEdit(), "96")
+    window.path_edit.setFocus()
+    qapp.processEvents()
+
+    assert window.analyse_manual_dpi == 96.0
+    assert window.dpi_spin.value() == 96.0
+
+
+def test_manual_dpi_spinbox_steps_apply_immediately(qapp, isolated_settings):
+    window = _make_window(qapp)
+
+    window._set_analyse_dpi_mode("manual")
+    window.dpi_spin.setValue(96.0)
+    window.dpi_spin.stepUp()
+
+    assert window.analyse_manual_dpi == 97.0
+    assert window.dpi_spin.value() == 97.0
 
 
 def test_main_window_starts_with_no_tool_selected(qapp, isolated_settings):

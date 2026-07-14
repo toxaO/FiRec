@@ -425,6 +425,7 @@ class MainWindow(QMainWindow):
         self.dpi_spin.setSuffix(" dpi")
         self.dpi_spin.setMaximumWidth(110)
         self.dpi_spin.valueChanged.connect(lambda value: self._on_dpi_changed())
+        self._wire_spinbox_commit(self.dpi_spin, self._on_dpi_changed)
 
         self.path_edit.returnPressed.connect(self.load_from_path_edit)
         self.path_edit.setPlaceholderText("TIFF画像パス")
@@ -550,6 +551,7 @@ class MainWindow(QMainWindow):
         self.film_pixel_spin.setSingleStep(100.0)
         self.film_pixel_spin.setToolTip("未照射フィルムの生ピクセル値。")
         self.film_pixel_spin.valueChanged.connect(lambda value: self._on_radiation_setting_changed())
+        self._wire_spinbox_commit(self.film_pixel_spin, self._on_radiation_setting_changed)
 
         self.radiation_threshold_spin.setRange(0.0, 100.0)
         self.radiation_threshold_spin.setDecimals(1)
@@ -557,6 +559,7 @@ class MainWindow(QMainWindow):
         self.radiation_threshold_spin.setSuffix(" %")
         self.radiation_threshold_spin.setValue(50.0)
         self.radiation_threshold_spin.valueChanged.connect(lambda value: self._on_radiation_setting_changed())
+        self._wire_spinbox_commit(self.radiation_threshold_spin, self._on_radiation_setting_changed)
 
         self.radiation_center_spin.setRange(1.0, 100.0)
         self.radiation_center_spin.setDecimals(1)
@@ -564,11 +567,13 @@ class MainWindow(QMainWindow):
         self.radiation_center_spin.setSuffix(" mm")
         self.radiation_center_spin.setValue(20.0)
         self.radiation_center_spin.valueChanged.connect(lambda value: self._on_radiation_setting_changed())
+        self._wire_spinbox_commit(self.radiation_center_spin, self._on_radiation_setting_changed)
 
         self.smoothing_window_spin.setRange(1, 501)
         self.smoothing_window_spin.setSingleStep(2)
         self.smoothing_window_spin.setValue(5)
         self.smoothing_window_spin.valueChanged.connect(lambda value: self._on_radiation_setting_changed())
+        self._wire_spinbox_commit(self.smoothing_window_spin, self._on_radiation_setting_changed)
 
         self.radiation_profile_auto_radio = QRadioButton("自動")
         self.radiation_profile_manual_radio = QRadioButton("手動")
@@ -592,6 +597,10 @@ class MainWindow(QMainWindow):
         self.radiation_profile_distance_spin.setValue(40.0)
         self.radiation_profile_distance_spin.valueChanged.connect(
             lambda value: self._on_radiation_profile_distance_changed()
+        )
+        self._wire_spinbox_commit(
+            self.radiation_profile_distance_spin,
+            self._on_radiation_profile_distance_changed,
         )
 
         settings_layout = QGridLayout()
@@ -1069,6 +1078,16 @@ class MainWindow(QMainWindow):
     def _save_settings(self) -> None:
         self.settings.setValue("last_image_path", self.path_edit.text().strip())
         self._save_analyse_dpi_settings()
+
+    def _wire_spinbox_commit(self, spinbox: QDoubleSpinBox | QSpinBox, handler) -> None:
+        spinbox.setKeyboardTracking(False)
+        spinbox.editingFinished.connect(
+            lambda spinbox=spinbox, handler=handler: self._on_spinbox_editing_finished(spinbox, handler)
+        )
+
+    def _on_spinbox_editing_finished(self, spinbox: QDoubleSpinBox | QSpinBox, handler) -> None:
+        spinbox.interpretText()
+        handler()
 
     def _on_dpi_changed(self) -> None:
         if self.analyse_dpi_mode != "manual":
