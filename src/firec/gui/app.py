@@ -567,7 +567,7 @@ class MainWindow(QMainWindow):
         self.film_pixel_spin.setRange(-1_000_000_000.0, 1_000_000_000.0)
         self.film_pixel_spin.setDecimals(1)
         self.film_pixel_spin.setSingleStep(100.0)
-        self.film_pixel_spin.setToolTip("未照射フィルムの生ピクセル値。")
+        self.film_pixel_spin.setToolTip("未照射部分の画素値として扱う値です。未照射フィルムや照射野外の ROI の値を入れてください。")
         self.film_pixel_spin.valueChanged.connect(lambda value: self._on_radiation_setting_changed())
         self._wire_spinbox_commit(self.film_pixel_spin, self._on_radiation_setting_changed)
 
@@ -622,13 +622,41 @@ class MainWindow(QMainWindow):
         )
 
         settings_layout = QGridLayout()
-        settings_layout.addWidget(QLabel("ベース画素値"), 0, 0)
+        settings_layout.addWidget(
+            _tooltip_label(
+                "ベース画素値",
+                "未照射部分の画素値として扱う値です。未照射フィルムや照射野外の ROI の値を入れてください。",
+            ),
+            0,
+            0,
+        )
         settings_layout.addWidget(self.film_pixel_spin, 0, 1)
-        settings_layout.addWidget(QLabel("閾値"), 1, 0)
+        settings_layout.addWidget(
+            _tooltip_label(
+                "閾値",
+                "ベース画素値と照射野画素値の間の何％を照射野境界とするかを決めます。ラインプロファイル上では黄色線です。",
+            ),
+            1,
+            0,
+        )
         settings_layout.addWidget(self.radiation_threshold_spin, 1, 1)
-        settings_layout.addWidget(QLabel("照射野画素値平均範囲"), 2, 0)
+        settings_layout.addWidget(
+            _tooltip_label(
+                "照射野画素値平均範囲",
+                "照射野中心からこの距離内の画素値を平均して照射野の画素値とします。ラインプロファイル上では緑線の間の平均値です。",
+            ),
+            2,
+            0,
+        )
         settings_layout.addWidget(self.radiation_center_spin, 2, 1)
-        settings_layout.addWidget(QLabel("smoothed px"), 3, 0)
+        settings_layout.addWidget(
+            _tooltip_label(
+                "smoothed px",
+                "ラインプロファイルのスムージングに使うピクセル数です。",
+            ),
+            3,
+            0,
+        )
         settings_layout.addWidget(self.smoothing_window_spin, 3, 1)
 
         auto_page = QGroupBox("auto")
@@ -640,7 +668,12 @@ class MainWindow(QMainWindow):
         auto_row = QHBoxLayout()
         auto_row.setContentsMargins(0, 0, 0, 0)
         auto_row.setSpacing(4)
-        auto_row.addWidget(QLabel("レーザー中心からのoffset"))
+        auto_row.addWidget(
+            _tooltip_label(
+                "レーザー中心からのoffset",
+                "レーザー中心とラインプロファイル線の距離です。",
+            )
+        )
         auto_row.addWidget(self.radiation_profile_distance_spin)
         auto_row.addStretch(1)
         # auto_layout.addWidget(auto_hint)
@@ -652,6 +685,7 @@ class MainWindow(QMainWindow):
         manual_layout.setContentsMargins(6, 6, 6, 6)
         manual_layout.setSpacing(4)
         manual_hint = QLabel("ラインプロファイル線を直接ドラッグして位置を決めます。")
+        manual_hint.setToolTip("ラインプロファイル線を直接ドラッグして位置を決めます。")
         manual_hint.setWordWrap(True)
         manual_reset_button = _button("リセット")
         manual_reset_button.clicked.connect(self.reset_radiation_profile_lines)
@@ -667,6 +701,8 @@ class MainWindow(QMainWindow):
         profile_mode_row = QHBoxLayout()
         profile_mode_row.setContentsMargins(0, 0, 0, 0)
         profile_mode_row.setSpacing(8)
+        self.radiation_profile_auto_radio.setToolTip("レーザー中心から一定距離に 4 本のラインプロファイル線を自動配置します。")
+        self.radiation_profile_manual_radio.setToolTip("ラインプロファイル線を直接ドラッグして位置を決めます。")
         profile_mode_row.addWidget(self.radiation_profile_auto_radio)
         profile_mode_row.addWidget(self.radiation_profile_manual_radio)
         profile_mode_row.addStretch(1)
@@ -678,6 +714,8 @@ class MainWindow(QMainWindow):
 
         self.raw_profile_check.setChecked(True)
         self.smoothed_profile_check.setChecked(True)
+        self.raw_profile_check.setToolTip("ラインプロファイルを表示します。")
+        self.smoothed_profile_check.setToolTip("スムージングをかけたラインプロファイルを表示します。")
         self.raw_profile_check.toggled.connect(lambda visible: self._on_profile_visibility_changed())
         self.smoothed_profile_check.toggled.connect(lambda visible: self._on_profile_visibility_changed())
 
@@ -756,6 +794,7 @@ class MainWindow(QMainWindow):
         self.dash_interval_spin = self._display_style_spinbox(1, 50, DISPLAY_STYLE_DEFAULTS["dash_interval"])
         self.point_label_check = QCheckBox("点のラベル")
         self.point_label_check.setChecked(DISPLAY_STYLE_DEFAULTS["point_labels"])
+        self.point_label_check.setToolTip("画像上の点が何を示すかのラベルを表示します。")
         self.point_fill_opacity_spin.setSingleStep(10)
 
         self.line_width_spin.valueChanged.connect(self.view.set_line_width)
@@ -785,28 +824,28 @@ class MainWindow(QMainWindow):
         common_line_row = QHBoxLayout()
         common_line_row.setContentsMargins(0, 0, 0, 0)
         common_line_row.setSpacing(0)
-        common_line_row.addWidget(QLabel("線幅"))
+        common_line_row.addWidget(_tooltip_label("線幅", "画像上の線の太さを設定します。"))
         common_line_row.addWidget(self.line_width_spin)
         common_line_row.addStretch(1)
         common_style_layout.addLayout(common_line_row)
         common_dash_row = QHBoxLayout()
         common_dash_row.setContentsMargins(0, 0, 0, 0)
         common_dash_row.setSpacing(0)
-        common_dash_row.addWidget(QLabel("点線間隔"))
+        common_dash_row.addWidget(_tooltip_label("点線間隔", "画像上の点線の間隔を設定します。"))
         common_dash_row.addWidget(self.dash_interval_spin)
         common_dash_row.addStretch(1)
         common_style_layout.addLayout(common_dash_row)
         common_point_row = QHBoxLayout()
         common_point_row.setContentsMargins(0, 0, 0, 0)
         common_point_row.setSpacing(0)
-        common_point_row.addWidget(QLabel("点の半径"))
+        common_point_row.addWidget(_tooltip_label("点の半径", "画像上の点の半径を設定します。"))
         common_point_row.addWidget(self.point_radius_spin)
         common_point_row.addStretch(1)
         common_style_layout.addLayout(common_point_row)
         common_opacity_row = QHBoxLayout()
         common_opacity_row.setContentsMargins(0, 0, 0, 0)
         common_opacity_row.setSpacing(0)
-        common_opacity_row.addWidget(QLabel("点の塗りつぶし透明度"))
+        common_opacity_row.addWidget(_tooltip_label("点の塗りつぶし透明度", "画像上の点の透明度を設定します。"))
         common_opacity_row.addWidget(self.point_fill_opacity_spin)
         common_opacity_row.addStretch(1)
         common_style_layout.addLayout(common_opacity_row)
@@ -838,7 +877,9 @@ class MainWindow(QMainWindow):
             ("照射野長さ", self.view.set_show_radiation_edge_lengths),
             ("照射野頂点", self.view.set_show_radiation_vertices),
             ("照射野境界点", self.view.set_show_radiation_points),
-        )))
+        ), {
+            "照射野境界点": "ラインプロファイル上の閾値で決まる境界の位置です。",
+        }))
         radiation_widget.setLayout(radiation_layout)
 
         light_widget = QWidget()
@@ -922,7 +963,11 @@ class MainWindow(QMainWindow):
         _sync(expanded)
         return frame, toggle
 
-    def _display_check_grid(self, items: tuple[tuple[str, Callable[[bool], None]], ...]) -> QWidget:
+    def _display_check_grid(
+        self,
+        items: tuple[tuple[str, Callable[[bool], None]], ...],
+        tooltips: dict[str, str] | None = None,
+    ) -> QWidget:
         widget = QWidget()
         layout = QGridLayout()
         layout.setContentsMargins(0, 0, 0, 0)
@@ -931,6 +976,8 @@ class MainWindow(QMainWindow):
         for index, (label, callback) in enumerate(items):
             check = QCheckBox(label)
             check.setChecked(True)
+            if tooltips and label in tooltips:
+                check.setToolTip(tooltips[label])
             check.toggled.connect(callback)
             check.toggled.connect(lambda checked, label=label: self._on_display_option_changed(label, checked))
             self.display_option_checks[label] = check
@@ -2322,6 +2369,13 @@ def _button(text: str) -> QPushButton:
     button.setMinimumWidth(72)
     button.setFocusPolicy(Qt.NoFocus)
     return button
+
+
+def _tooltip_label(text: str, tooltip: str | None = None) -> QLabel:
+    label = QLabel(text)
+    if tooltip:
+        label.setToolTip(tooltip)
+    return label
 
 
 def _icon_tool_button(filename: str, tooltip: str) -> QToolButton:

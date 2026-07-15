@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 from PySide6.QtCore import QSettings
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 
 from firec.gui import app as app_module
 from firec.gui.image_view import ImageView
@@ -48,6 +48,13 @@ def _make_window(qapp):
     window = app_module.MainWindow()
     window.hide()
     return window
+
+
+def _find_label(window, text: str) -> QLabel:
+    for label in window.findChildren(QLabel):
+        if label.text() == text:
+            return label
+    raise AssertionError(f"label not found: {text}")
 
 
 def test_main_window_restores_user_settings(qapp, isolated_settings):
@@ -102,6 +109,30 @@ def test_main_window_restores_user_settings(qapp, isolated_settings):
     assert restored.view.show_point_labels is False
     assert restored.dash_interval_spin.value() == 9
     assert restored.view.dash_interval == 9
+
+
+def test_analyse_parameter_labels_show_hover_help(qapp, isolated_settings):
+    window = _make_window(qapp)
+
+    assert _find_label(window, "ベース画素値").toolTip() == (
+        "未照射部分の画素値として扱う値です。未照射フィルムや照射野外の ROI の値を入れてください。"
+    )
+    assert "黄色線" in _find_label(window, "閾値").toolTip()
+    assert "緑線" in _find_label(window, "照射野画素値平均範囲").toolTip()
+    assert "スムージング" in _find_label(window, "smoothed px").toolTip()
+    assert "距離" in _find_label(window, "レーザー中心からのoffset").toolTip()
+    assert window.radiation_profile_auto_radio.toolTip() == "レーザー中心から一定距離に 4 本のラインプロファイル線を自動配置します。"
+    assert window.radiation_profile_manual_radio.toolTip() == "ラインプロファイル線を直接ドラッグして位置を決めます。"
+    assert window.raw_profile_check.toolTip() == "ラインプロファイルを表示します。"
+    assert window.smoothed_profile_check.toolTip() == "スムージングをかけたラインプロファイルを表示します。"
+    assert window.point_label_check.toolTip() == "画像上の点が何を示すかのラベルを表示します。"
+    assert _find_label(window, "線幅").toolTip() == "画像上の線の太さを設定します。"
+    assert _find_label(window, "点線間隔").toolTip() == "画像上の点線の間隔を設定します。"
+    assert _find_label(window, "点の半径").toolTip() == "画像上の点の半径を設定します。"
+    assert _find_label(window, "点の塗りつぶし透明度").toolTip() == "画像上の点の透明度を設定します。"
+    assert window.display_option_checks["照射野境界点"].toolTip() == "ラインプロファイル上の閾値で決まる境界の位置です。"
+    assert window.display_option_checks["レーザー中心"].toolTip() == ""
+    assert "未照射部分" in window.film_pixel_spin.toolTip()
 
 
 def test_manual_dpi_updates_on_focus_loss(qapp, isolated_settings):
