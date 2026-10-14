@@ -1,5 +1,55 @@
 """FiStar-inspired styling for the FiRec desktop interface."""
 
+from PySide6.QtCore import QEvent, QObject, Qt
+from PySide6.QtWidgets import QCheckBox, QLabel, QProxyStyle, QStyle, QStyleOptionButton, QToolTip
+
+
+class HoverHelpTextFilter(QObject):
+    """Limit checkbox and radio help to their text, excluding empty space."""
+
+    def eventFilter(self, widget, event):
+        if event.type() == QEvent.ToolTip:
+            option = QStyleOptionButton()
+            widget.initStyleOption(option)
+            element = QStyle.SE_CheckBoxContents if isinstance(widget, QCheckBox) else QStyle.SE_RadioButtonContents
+            contents = widget.style().subElementRect(element, option, widget)
+            text_rect = widget.style().itemTextRect(
+                widget.fontMetrics(), contents, Qt.AlignLeft | Qt.AlignVCenter,
+                widget.isEnabled(), widget.text(),
+            )
+            if not text_rect.contains(event.pos()):
+                QToolTip.hideText()
+                event.accept()
+                return True
+        return super().eventFilter(widget, event)
+
+
+class HoverHelpLabel(QLabel):
+    """Show field help only over the rendered label text."""
+
+    def event(self, event):
+        if event.type() == QEvent.ToolTip:
+            text_rect = self.style().itemTextRect(
+                self.fontMetrics(), self.contentsRect(), self.alignment(),
+                self.isEnabled(), self.text(),
+            )
+            if not text_rect.contains(event.pos()):
+                QToolTip.hideText()
+                event.accept()
+                return True
+        return super().event(event)
+
+
+class HoverHelpStyle(QProxyStyle):
+    """Wait before showing help, including when moving between controls."""
+
+    def styleHint(self, hint, option=None, widget=None, returnData=None):
+        if hint == QStyle.SH_ToolTip_WakeUpDelay:
+            return 1000
+        if hint == QStyle.SH_ToolTip_FallAsleepDelay:
+            return 0
+        return super().styleHint(hint, option, widget, returnData)
+
 STYLE = """
 QWidget { color: #253b49; font-size: 13px; }
 QMainWindow, QDialog { background: #f3f6f8; }
@@ -32,6 +82,10 @@ QPushButton[primary="true"]:hover { background: #066c78; }
 QPushButton:disabled { background: #e9eef1; border-color: #dce5eb; color: #85949e; }
 QToolButton { border: 1px solid transparent; border-radius: 4px; padding: 3px; }
 QToolButton:hover, QToolButton:checked { background: #e1eff2; border-color: #a8ced6; }
+QToolButton[imageTool="true"] { background: #ffffff; border: 1px solid #b9cbd5; }
+QToolButton[imageTool="true"]:hover { background: #e1eff2; border-color: #78b4c1; }
+QToolButton[imageTool="true"]:checked { background: #d6edf1; border-color: #087f8c; }
+QToolButton[imageTool="true"]:disabled { background: #f1f4f6; border-color: #dce5eb; }
 QScrollArea { border: 0; background: transparent; }
 QTreeWidget, QTableWidget { background: #ffffff; alternate-background-color: #f3f7fa;
     border: 1px solid #dce5eb; border-radius: 4px;

@@ -83,8 +83,8 @@ def test_main_window_restores_user_settings(qapp, isolated_settings):
 
     restored = _make_window(qapp)
 
-    assert restored.main_tabs.tabText(0) == "Analyse"
-    assert restored.main_tabs.tabText(1) == "Records"
+    assert restored.main_tabs.tabText(0) == "解析"
+    assert restored.main_tabs.tabText(1) == "記録"
     assert restored.analyse_dpi_mode == "manual"
     assert restored.analyse_manual_dpi == 96.0
     assert restored.film_pixel_spin.value() == 321.0
@@ -114,25 +114,56 @@ def test_main_window_restores_user_settings(qapp, isolated_settings):
 def test_analyse_parameter_labels_show_hover_help(qapp, isolated_settings):
     window = _make_window(qapp)
 
-    assert _find_label(window, "ベース画素値").toolTip() == (
+    assert _find_label(window, "ベース画素値").toolTip().replace("\n", "") == (
         "未照射部分の画素値として扱う値です。未照射フィルムや照射野外の ROI の値を入れてください。"
     )
-    assert "黄色線" in _find_label(window, "閾値").toolTip()
-    assert "緑線" in _find_label(window, "照射野画素値平均範囲").toolTip()
-    assert "スムージング" in _find_label(window, "smoothed px").toolTip()
-    assert "距離" in _find_label(window, "レーザー中心からのoffset").toolTip()
-    assert window.radiation_profile_auto_radio.toolTip() == "レーザー中心から一定距離に 4 本のラインプロファイル線を自動配置します。"
-    assert window.radiation_profile_manual_radio.toolTip() == "ラインプロファイル線を直接ドラッグして位置を決めます。"
-    assert window.raw_profile_check.toolTip() == "ラインプロファイルを表示します。"
-    assert window.smoothed_profile_check.toolTip() == "スムージングをかけたラインプロファイルを表示します。"
-    assert window.point_label_check.toolTip() == "画像上の点が何を示すかのラベルを表示します。"
-    assert _find_label(window, "線幅").toolTip() == "画像上の線の太さを設定します。"
-    assert _find_label(window, "点線間隔").toolTip() == "画像上の点線の間隔を設定します。"
-    assert _find_label(window, "点の半径").toolTip() == "画像上の点の半径を設定します。"
-    assert _find_label(window, "点の塗りつぶし透明度").toolTip() == "画像上の点の透明度を設定します。"
-    assert window.display_option_checks["照射野境界点"].toolTip() == "ラインプロファイル上の閾値で決まる境界の位置です。"
-    assert window.display_option_checks["レーザー中心"].toolTip() == ""
-    assert "未照射部分" in window.film_pixel_spin.toolTip()
+    assert "黄色線" in _find_label(window, "閾値").toolTip().replace("\n", "")
+    assert "緑線" in _find_label(window, "照射野画素値平均範囲").toolTip().replace("\n", "")
+    assert "スムージング" in _find_label(window, "smoothed px").toolTip().replace("\n", "")
+    assert "距離" in _find_label(window, "レーザー中心からのoffset").toolTip().replace("\n", "")
+    assert window.radiation_profile_auto_radio.toolTip().replace("\n", "") == "レーザー中心から一定距離に 4 本のラインプロファイル線を自動配置します。"
+    assert window.radiation_profile_manual_radio.toolTip().replace("\n", "") == "ラインプロファイル線を直接ドラッグして位置を決めます。"
+    assert window.raw_profile_check.toolTip().replace("\n", "") == "ラインプロファイルを表示します。"
+    assert window.smoothed_profile_check.toolTip().replace("\n", "") == "スムージングをかけたラインプロファイルを表示します。"
+    assert window.point_label_check.toolTip().replace("\n", "") == "画像上の点が何を示すかのラベルを表示します。"
+    assert _find_label(window, "線幅").toolTip().replace("\n", "") == "画像上の線の太さを設定します。"
+    assert _find_label(window, "点線間隔").toolTip().replace("\n", "") == "画像上の点線の間隔を設定します。"
+    assert _find_label(window, "点の半径").toolTip().replace("\n", "") == "画像上の点の半径を設定します。"
+    assert "0%で透明" in _find_label(window, "点の塗りつぶし不透明度").toolTip().replace("\n", "")
+    assert window.display_option_checks["照射野境界点"].toolTip().replace("\n", "") == "ラインプロファイル上の閾値で決まる境界の位置です。"
+    assert "表示・非表示" in window.display_option_checks["レーザー中心"].toolTip().replace("\n", "")
+    assert not window.film_pixel_spin.toolTip()
+
+
+def test_input_fields_have_no_hover_help_after_dpi_mode_changes(qapp, isolated_settings):
+    from PySide6.QtWidgets import QAbstractSpinBox, QComboBox, QLineEdit
+
+    window = _make_window(qapp)
+    for mode in ("manual", "image"):
+        window._set_analyse_dpi_mode(mode)
+        for widget in window.findChildren(QLineEdit) + window.findChildren(QAbstractSpinBox) + window.findChildren(QComboBox):
+            assert not widget.toolTip()
+    window.close()
+
+
+def test_label_help_ignores_padding_but_appears_over_text(qapp):
+    from PySide6.QtCore import QEvent, QPoint
+    from PySide6.QtGui import QHelpEvent
+    from PySide6.QtWidgets import QToolTip
+
+    label = app_module._tooltip_label("線幅", "線の太さを指定します。")
+    label.setFixedSize(300, 30)
+    label.show()
+    qapp.processEvents()
+    QToolTip.hideText()
+    outside = QPoint(290, 15)
+    qapp.sendEvent(label, QHelpEvent(QEvent.ToolTip, outside, label.mapToGlobal(outside)))
+    assert not QToolTip.isVisible()
+    inside = QPoint(10, 15)
+    qapp.sendEvent(label, QHelpEvent(QEvent.ToolTip, inside, label.mapToGlobal(inside)))
+    assert QToolTip.isVisible()
+    QToolTip.hideText()
+    label.close()
 
 
 def test_manual_dpi_updates_on_focus_loss(qapp, isolated_settings):
@@ -435,6 +466,54 @@ def test_laser_stage_forces_raw_profile_visible_even_when_saved_toggles_are_off(
     assert window.bottom_profile_plot.smoothed_profile_visible is False
     assert window.left_profile_plot.values is not None
     assert window.bottom_profile_plot.values is not None
+
+
+def test_display_options_toggle_reveals_all_groups_and_preserves_choices(qapp, isolated_settings):
+    window = _make_window(qapp)
+    window.show()
+    qapp.processEvents()
+    assert not window.line_width_spin.isVisible()
+    window.display_toggle.click()
+    qapp.processEvents()
+    controls = [window.line_width_spin, window.point_label_check, *window.display_option_checks.values()]
+    assert all(control.isVisible() for control in controls)
+    window.display_option_checks["照射野境界"].setChecked(False)
+    window.display_toggle.click()
+    qapp.processEvents()
+    assert not any(control.isVisible() for control in controls)
+    window.display_toggle.click()
+    qapp.processEvents()
+    assert all(control.isVisible() for control in controls)
+    assert not window.display_option_checks["照射野境界"].isChecked()
+    assert not window.view.show_radiation_edges
+    window.close()
+
+
+def test_open_button_loads_image_from_entered_path(qapp, isolated_settings, tmp_path):
+    import tifffile
+
+    path = tmp_path / "image.tif"
+    image = np.arange(100, dtype=np.uint16).reshape(10, 10)
+    tifffile.imwrite(path, image)
+    window = _make_window(qapp)
+    window.path_edit.setText(str(path))
+    window.open_button.click()
+    assert window.image_path == path
+    np.testing.assert_array_equal(window.image, image)
+    window.close()
+
+
+def test_operation_help_tracks_tool_and_returns_to_current_stage(qapp, isolated_settings):
+    window = _make_window(qapp)
+    stage_help = window.operation_help.text()
+    window.pan_tool_button.click()
+    assert "移動" in window.operation_help.text()
+    assert window.operation_help.text() != stage_help
+    window.ruler_tool_button.click()
+    assert "2点" in window.operation_help.text()
+    window.ruler_tool_button.click()
+    assert window.operation_help.text() == stage_help
+    window.close()
 
 
 def test_radiation_stage_keeps_profile_visibility_toggles(qapp, isolated_settings):

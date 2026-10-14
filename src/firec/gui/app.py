@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QStatusBar,
     QRadioButton,
     QSpinBox,
+    QSplitter,
     QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
@@ -56,7 +57,7 @@ from firec.core.analysis import (
 from firec.core.geometry import Point, RotatedRect
 from firec.gui.image_view import ImageView
 from firec.gui.profile_plot import ProfilePlot
-from firec.gui.theme import GROUP_STYLE, SELECTED_GROUP_STYLE, STYLE
+from firec.gui.theme import GROUP_STYLE, SELECTED_GROUP_STYLE, STYLE, HoverHelpLabel, HoverHelpStyle, HoverHelpTextFilter
 from firec.storage.repository import (
     connect_database,
     delete_analysis,
@@ -160,6 +161,9 @@ TOOLS_ICON_DIR = _resource_dir("assets", "icons", "tools")
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
+        application = QApplication.instance()
+        if application is not None and not isinstance(application.style(), HoverHelpStyle):
+            application.setStyle(HoverHelpStyle(application.style().objectName()))
         self.setStyleSheet(STYLE)
         self.setWindowTitle("FiRec")
         self.resize(1060, 760)
@@ -231,6 +235,7 @@ class MainWindow(QMainWindow):
             "right": self.right_profile_plot,
         }
         for line_name, plot in self.profile_plots.items():
+            plot.setToolTip("クリックしてプロファイルを選択します。\n境界カーソルをドラッグして位置を調整できます。")
             plot.on_cursor_moved = self._on_profile_cursor_moved
             plot.on_selected = lambda line_name=line_name: self._on_profile_plot_selected(line_name)
         self.result_tree = QTreeWidget()
@@ -254,6 +259,9 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status)
 
         self._build_layout()
+        self.hover_help_text_filter = HoverHelpTextFilter(self)
+        for control in self.findChildren(QCheckBox) + self.findChildren(QRadioButton):
+            control.installEventFilter(self.hover_help_text_filter)
         self._set_tool_mode(None)
         self._restore_settings()
         self.view.set_editing_enabled(False)
@@ -262,8 +270,8 @@ class MainWindow(QMainWindow):
         self.refresh_results_table()
 
     def _build_layout(self) -> None:
-        self.main_tabs.addTab(self._analyse_tab(), "Analyse")
-        self.main_tabs.addTab(self._record_tab(), "Records")
+        self.main_tabs.addTab(self._analyse_tab(), "解析")
+        self.main_tabs.addTab(self._record_tab(), "記録")
         self.setCentralWidget(self.main_tabs)
 
     def _analyse_tab(self) -> QWidget:
@@ -289,6 +297,7 @@ class MainWindow(QMainWindow):
         display_options_frame = self._display_options_frame()
         step_nav_widget = _plain_frame(self._step_nav_buttons())
         step_nav_widget.setContentsMargins(0, 0, 0, 0)
+        side_layout.addWidget(self._resolution_frame())
         side_layout.addWidget(laser_frame)
         side_layout.addWidget(radiation_frame)
         side_layout.addWidget(light_frame)
@@ -297,7 +306,6 @@ class MainWindow(QMainWindow):
 
         side_panel = _plain_frame(side_layout)
         side_panel.setMinimumWidth(340)
-        side_panel.setMaximumWidth(400)
 
         side_container_layout = QVBoxLayout()
         side_container_layout.setContentsMargins(0, 0, 0, 0)
@@ -308,7 +316,6 @@ class MainWindow(QMainWindow):
         side_scroll.setWidget(side_panel)
         side_scroll.setWidgetResizable(True)
         side_scroll.setMinimumWidth(360)
-        side_scroll.setMaximumWidth(420)
         side_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         side_container_layout.addWidget(side_scroll, 1)
@@ -317,7 +324,7 @@ class MainWindow(QMainWindow):
         side_container = QWidget()
         side_container.setLayout(side_container_layout)
         side_container.setMinimumWidth(360)
-        side_container.setMaximumWidth(420)
+        side_container.setMaximumWidth(460)
 
         left_profile_layout = QVBoxLayout()
         left_profile_layout.setContentsMargins(0, 0, 0, 0)
@@ -382,8 +389,18 @@ class MainWindow(QMainWindow):
         content_layout = QHBoxLayout()
         content_layout.setContentsMargins(10, 10, 10, 10)
         content_layout.setSpacing(10)
-        content_layout.addLayout(layout, 1)
-        content_layout.addWidget(side_container)
+        image_panel = QWidget()
+        image_panel.setLayout(layout)
+        self.analysis_splitter = QSplitter(Qt.Horizontal)
+        self.analysis_splitter.setHandleWidth(4)
+        self.analysis_splitter.setChildrenCollapsible(False)
+        self.analysis_splitter.addWidget(image_panel)
+        self.analysis_splitter.addWidget(side_container)
+        self.analysis_splitter.setStretchFactor(0, 5)
+        self.analysis_splitter.setStretchFactor(1, 3)
+        self.analysis_splitter.setSizes([650, 380])
+        self.analysis_splitter.handle(1).setToolTip("境界を左右にドラッグすると、\n画像と解析パネルの幅を調整できます。")
+        content_layout.addWidget(self.analysis_splitter)
 
         widget = QWidget()
         widget.setLayout(content_layout)
@@ -391,11 +408,14 @@ class MainWindow(QMainWindow):
 
     def _record_tab(self) -> QWidget:
         refresh_button = _button("更新")
+        refresh_button.setToolTip("保存済みの記録を再読み込みします。")
         refresh_button.clicked.connect(self.refresh_results_table)
         export_button = _button("CSV出力")
         export_button.setProperty("primary", True)
+        export_button.setToolTip("保存済みの全記録をCSVファイルへ出力します。")
         export_button.clicked.connect(self.export_csv)
         delete_button = _button("削除")
+        delete_button.setToolTip("選択した記録を、確認後に削除します。")
         delete_button.clicked.connect(self.delete_selected_records)
 
         columns_frame = _frame("表示列")
@@ -430,7 +450,31 @@ class MainWindow(QMainWindow):
 
     def _load_bar(self) -> QVBoxLayout:
         browse_button = _button("参照")
+        browse_button.setToolTip("TIFF画像を選ぶと、そのまま読み込みます。")
         browse_button.clicked.connect(self.browse_image_path)
+        self.open_button = _button("開く")
+        self.open_button.setProperty("primary", True)
+        self.open_button.setToolTip("入力したパスのTIFF画像を開きます。\nEnterでも開けます。")
+        self.open_button.clicked.connect(self.load_from_path_edit)
+        self.path_edit.returnPressed.connect(self.load_from_path_edit)
+        self.path_edit.setPlaceholderText("TIFF画像パス")
+        self.path_edit.setMinimumWidth(220)
+        self.image_info_label.setWordWrap(True)
+
+        top_row = QHBoxLayout()
+        top_row.addWidget(_tooltip_label("画像", "解析するTIFF画像のパスを入力します。\nEnterまたは「開く」で読み込みます。"))
+        top_row.addWidget(self.path_edit, 1)
+        top_row.addWidget(browse_button)
+        top_row.addWidget(self.open_button)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(4)
+        layout.addLayout(top_row)
+        layout.addWidget(self.image_info_label)
+        return layout
+
+    def _resolution_frame(self) -> QGroupBox:
 
         self.analyse_dpi_group = QButtonGroup(self)
         self.analyse_dpi_group.addButton(self.analyse_dpi_image_radio)
@@ -448,31 +492,21 @@ class MainWindow(QMainWindow):
         self.dpi_spin.setSpecialValueText("px")
         self.dpi_spin.setSuffix(" dpi")
         self.dpi_spin.setMaximumWidth(110)
+        self.analyse_dpi_image_radio.setToolTip("TIFF画像に記録された解像度を使用します。\n解像度がない場合は前回の手動DPI（初期72）を使用します。")
+        self.analyse_dpi_manual_radio.setToolTip("入力したDPIを使用して、画素単位の値をmmへ換算します。")
         self.dpi_spin.valueChanged.connect(lambda value: self._on_dpi_changed())
         self._wire_spinbox_commit(self.dpi_spin, self._on_dpi_changed)
 
-        self.path_edit.returnPressed.connect(self.load_from_path_edit)
-        self.path_edit.setPlaceholderText("TIFF画像パス")
-        self.path_edit.setMinimumWidth(320)
-        self.image_info_label.setMinimumWidth(180)
-
-        top_row = QHBoxLayout()
-        top_row.addWidget(self.path_edit, 1)
-        top_row.addWidget(browse_button)
-
-        bottom_row = QHBoxLayout()
-        bottom_row.addWidget(self.image_info_label, 1)
-        bottom_row.addWidget(QLabel("DPI"))
-        bottom_row.addWidget(self.analyse_dpi_image_radio)
-        bottom_row.addWidget(self.analyse_dpi_manual_radio)
-        bottom_row.addWidget(self.dpi_spin)
-
-        layout = QVBoxLayout()
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(3)
-        layout.addLayout(top_row)
-        layout.addLayout(bottom_row)
-        return layout
+        layout = QHBoxLayout()
+        layout.addWidget(self.analyse_dpi_image_radio)
+        layout.addWidget(self.analyse_dpi_manual_radio)
+        self.dpi_label = _tooltip_label("DPI")
+        layout.addWidget(self.dpi_label)
+        layout.addWidget(self.dpi_spin)
+        layout.addStretch(1)
+        frame = _frame("解像度")
+        frame.setLayout(layout)
+        return frame
 
     def _zoom_buttons(self) -> QHBoxLayout:
         zoom_in_button = _button("拡大")
@@ -491,12 +525,12 @@ class MainWindow(QMainWindow):
         return layout
 
     def _tool_frame(self) -> QGroupBox:
-        self.pan_tool_button = _icon_tool_button("tools_hand.png", "パン")
-        self.zoom_tool_button = _icon_tool_button("tools_loupe.png", "ズーム")
-        self.circle_tool_button = _icon_tool_button("tools_circle.png", "円")
-        self.rect_tool_button = _icon_tool_button("tools_rect.png", "矩形")
-        self.ruler_tool_button = _icon_tool_button("tools_ruler.png", "定規")
-        reset_button = _icon_tool_button("tools_reset.png", "リセット")
+        self.pan_tool_button = _icon_tool_button("tools_hand.png", "移動：画像をドラッグして表示位置を調整します。\n再クリックで解析操作へ戻ります。")
+        self.zoom_tool_button = _icon_tool_button("tools_loupe.png", "ズーム：画像上を上下にドラッグして倍率を調整します。\n再クリックで解析操作へ戻ります。")
+        self.circle_tool_button = _icon_tool_button("tools_circle.png", "円：中心からドラッグして円を描き、\n円内の平均画素値を測定します。")
+        self.rect_tool_button = _icon_tool_button("tools_rect.png", "矩形：対角の角へドラッグして範囲を指定し、\n平均画素値を測定します。")
+        self.ruler_tool_button = _icon_tool_button("tools_ruler.png", "定規：画像上の2点をクリックして距離を測定します。\n端点はドラッグで調整できます。")
+        reset_button = _icon_tool_button("tools_reset.png", "画像全体を表示：表示位置と倍率をリセットします。\n解析内容は保持します。")
         reset_button.clicked.connect(self.view.reset_view)
 
         for button in (
@@ -546,6 +580,11 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
         layout.addLayout(tool_row)
+        self.operation_help = QLabel()
+        self.operation_help.setWordWrap(True)
+        self.operation_help.setProperty("muted", True)
+        self.operation_help.setMinimumHeight(self.operation_help.fontMetrics().lineSpacing() * 2)
+        layout.addWidget(self.operation_help)
 
         frame = _frame("ツール")
         frame.setLayout(layout)
@@ -555,6 +594,7 @@ class MainWindow(QMainWindow):
         self.laser_status_label = QLabel("レーザー中心を設定してください。")
         reset_button = _button("リセット")
         reset_button.clicked.connect(self.reset_laser_center)
+        reset_button.setToolTip("レーザー中心を画像中央へ戻します。")
 
         layout = QVBoxLayout()
         layout.addWidget(self.laser_status_label)
@@ -569,11 +609,11 @@ class MainWindow(QMainWindow):
         self.radiation_status_label = QLabel("照射野境界点を設定してください。")
         reset_button = _button("リセット")
         reset_button.clicked.connect(self.reset_radiation_field)
+        reset_button.setToolTip("照射野の境界点と、それに続く光照射野の設定をリセットします。")
 
         self.film_pixel_spin.setRange(-1_000_000_000.0, 1_000_000_000.0)
         self.film_pixel_spin.setDecimals(1)
         self.film_pixel_spin.setSingleStep(100.0)
-        self.film_pixel_spin.setToolTip("未照射部分の画素値として扱う値です。未照射フィルムや照射野外の ROI の値を入れてください。")
         self.film_pixel_spin.valueChanged.connect(lambda value: self._on_radiation_setting_changed())
         self._wire_spinbox_commit(self.film_pixel_spin, self._on_radiation_setting_changed)
 
@@ -631,7 +671,7 @@ class MainWindow(QMainWindow):
         settings_layout.addWidget(
             _tooltip_label(
                 "ベース画素値",
-                "未照射部分の画素値として扱う値です。未照射フィルムや照射野外の ROI の値を入れてください。",
+                "未照射部分の画素値として扱う値です。\n未照射フィルムや照射野外の ROI の値を\n入れてください。",
             ),
             0,
             0,
@@ -649,7 +689,7 @@ class MainWindow(QMainWindow):
         settings_layout.addWidget(
             _tooltip_label(
                 "照射野画素値平均範囲",
-                "照射野中心からこの距離内の画素値を平均して照射野の画素値とします。ラインプロファイル上では緑線の間の平均値です。",
+                "照射野中心からこの距離内の画素値を平均して、\n照射野の画素値とします。\nラインプロファイル上では緑線の間の平均値です。",
             ),
             2,
             0,
@@ -690,10 +730,10 @@ class MainWindow(QMainWindow):
         manual_layout = QVBoxLayout()
         manual_layout.setContentsMargins(6, 6, 6, 6)
         manual_layout.setSpacing(4)
-        manual_hint = QLabel("ラインプロファイル線を直接ドラッグして位置を決めます。")
-        manual_hint.setToolTip("ラインプロファイル線を直接ドラッグして位置を決めます。")
+        manual_hint = _tooltip_label("ラインプロファイル線を直接ドラッグして位置を決めます。", "ラインプロファイル線を直接ドラッグして位置を決めます。")
         manual_hint.setWordWrap(True)
         manual_reset_button = _button("リセット")
+        manual_reset_button.setToolTip("手動配置した4本のプロファイル線を、自動配置の位置へ戻します。")
         manual_reset_button.clicked.connect(self.reset_radiation_profile_lines)
         manual_row = QHBoxLayout()
         manual_row.setContentsMargins(0, 0, 0, 0)
@@ -757,6 +797,7 @@ class MainWindow(QMainWindow):
     def _light_frame(self) -> tuple[QGroupBox, list[QWidget]]:
         reset_button = _button("リセット")
         reset_button.clicked.connect(self.reset_light_field)
+        reset_button.setToolTip("光照射野の境界を照射野の境界に合わせて初期化します。")
 
         layout = QVBoxLayout()
         light_hint = QLabel("光照射野境界を直接ドラッグして位置を決めます。")
@@ -773,6 +814,7 @@ class MainWindow(QMainWindow):
     def _result_frame(self) -> tuple[QGroupBox, list[QWidget]]:
         save_button = _button("保存")
         save_button.setProperty("primary", True)
+        save_button.setToolTip("現在の照射野・光照射野の解析結果を記録に保存します。")
         save_button.clicked.connect(self.save_current_result)
 
         self.origin_combo.addItem("起点: レーザー", "laser")
@@ -782,6 +824,7 @@ class MainWindow(QMainWindow):
 
         controls = QHBoxLayout()
         controls.addStretch(1)
+        controls.addWidget(_tooltip_label("起点", "結果の中心座標を表示・保存するときの起点を選びます。"))
         controls.addWidget(self.origin_combo)
         controls.addWidget(save_button)
 
@@ -794,7 +837,7 @@ class MainWindow(QMainWindow):
         frame.mousePressEvent = lambda event: self.go_to_stage("result")
         return frame, [self.origin_combo, save_button]
 
-    def _display_options_frame(self) -> QGroupBox:
+    def _display_options_frame(self) -> QFrame:
         self.line_width_spin = self._display_style_spinbox(1, 20, DISPLAY_STYLE_DEFAULTS["line_width"])
         self.point_radius_spin = self._display_style_spinbox(1, 20, DISPLAY_STYLE_DEFAULTS["point_radius"])
         self.point_fill_opacity_spin = self._display_style_spinbox(0, 100, DISPLAY_STYLE_DEFAULTS["point_fill_opacity"], " %")
@@ -827,32 +870,32 @@ class MainWindow(QMainWindow):
         common_style_widget = QWidget()
         common_style_layout = QVBoxLayout()
         common_style_layout.setContentsMargins(0, 0, 0, 0)
-        common_style_layout.setSpacing(0)
+        common_style_layout.setSpacing(4)
         common_line_row = QHBoxLayout()
         common_line_row.setContentsMargins(0, 0, 0, 0)
-        common_line_row.setSpacing(0)
+        common_line_row.setSpacing(6)
         common_line_row.addWidget(_tooltip_label("線幅", "画像上の線の太さを設定します。"))
         common_line_row.addWidget(self.line_width_spin)
         common_line_row.addStretch(1)
         common_style_layout.addLayout(common_line_row)
         common_dash_row = QHBoxLayout()
         common_dash_row.setContentsMargins(0, 0, 0, 0)
-        common_dash_row.setSpacing(0)
+        common_dash_row.setSpacing(6)
         common_dash_row.addWidget(_tooltip_label("点線間隔", "画像上の点線の間隔を設定します。"))
         common_dash_row.addWidget(self.dash_interval_spin)
         common_dash_row.addStretch(1)
         common_style_layout.addLayout(common_dash_row)
         common_point_row = QHBoxLayout()
         common_point_row.setContentsMargins(0, 0, 0, 0)
-        common_point_row.setSpacing(0)
+        common_point_row.setSpacing(6)
         common_point_row.addWidget(_tooltip_label("点の半径", "画像上の点の半径を設定します。"))
         common_point_row.addWidget(self.point_radius_spin)
         common_point_row.addStretch(1)
         common_style_layout.addLayout(common_point_row)
         common_opacity_row = QHBoxLayout()
         common_opacity_row.setContentsMargins(0, 0, 0, 0)
-        common_opacity_row.setSpacing(0)
-        common_opacity_row.addWidget(_tooltip_label("点の塗りつぶし透明度", "画像上の点の透明度を設定します。"))
+        common_opacity_row.setSpacing(6)
+        common_opacity_row.addWidget(_tooltip_label("点の塗りつぶし不透明度", "0%で透明、100%で不透明になります。"))
         common_opacity_row.addWidget(self.point_fill_opacity_spin)
         common_opacity_row.addStretch(1)
         common_style_layout.addLayout(common_opacity_row)
@@ -902,73 +945,54 @@ class MainWindow(QMainWindow):
         light_widget.setLayout(light_layout)
 
         display_layout = QVBoxLayout()
-        display_layout.setContentsMargins(0, 0, 0, 0)
-        display_layout.setSpacing(0)
-        display_layout.addWidget(self._compact_section(*self._collapsible_section("点と線", common_style_widget, expanded=False)))
-        display_layout.addWidget(self._compact_section(*self._collapsible_section("レーザー", laser_widget, expanded=False)))
-        display_layout.addWidget(self._compact_section(*self._collapsible_section("照射野", radiation_widget, expanded=False)))
-        display_layout.addWidget(self._compact_section(*self._collapsible_section("光照射野", light_widget, expanded=False)))
+        display_layout.setContentsMargins(4, 4, 4, 4)
+        display_layout.setSpacing(6)
+        for title, content in (
+            ("点と線", common_style_widget),
+            ("レーザー", laser_widget),
+            ("照射野", radiation_widget),
+            ("光照射野", light_widget),
+        ):
+            section = _frame(title)
+            section_layout = QVBoxLayout()
+            section_layout.setContentsMargins(6, 4, 6, 4)
+            section_layout.addWidget(content)
+            section.setLayout(section_layout)
+            display_layout.addWidget(section)
 
         display_content = QWidget()
         display_content.setLayout(display_layout)
 
-        display_scroll = QScrollArea()
-        display_scroll.setWidget(display_content)
-        display_scroll.setWidgetResizable(True)
-        display_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        display_scroll.setFrameShape(QFrame.NoFrame)
-        display_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        display_scroll.setMaximumHeight(300)
+        self.display_scroll = QScrollArea()
+        self.display_scroll.setWidget(display_content)
+        self.display_scroll.setWidgetResizable(True)
+        self.display_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.display_scroll.setFrameShape(QFrame.NoFrame)
+        self.display_scroll.setFixedHeight(340)
+        self.display_scroll.hide()
 
-        frame = _frame("表示オプション")
+        self.display_toggle = QToolButton()
+        self.display_toggle.setText("表示オプション")
+        self.display_toggle.setCheckable(True)
+        self.display_toggle.setArrowType(Qt.RightArrow)
+        self.display_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.display_toggle.setToolTip("すべての表示設定をまとめて開閉します。\n点と線・レーザー・照射野・光照射野ごとに\n分類しています。")
+
+        def toggle_display(checked: bool) -> None:
+            self.display_scroll.setVisible(checked)
+            self.display_toggle.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
+
+        self.display_toggle.toggled.connect(toggle_display)
+        frame = QFrame()
+        frame.setProperty("card", True)
+        frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         frame_layout = QVBoxLayout()
-        frame_layout.setContentsMargins(0, 0, 0, 0)
-        frame_layout.setSpacing(0)
-        frame_layout.addWidget(display_scroll)
+        frame_layout.setContentsMargins(6, 4, 6, 4)
+        frame_layout.setSpacing(4)
+        frame_layout.addWidget(self.display_toggle)
+        frame_layout.addWidget(self.display_scroll)
         frame.setLayout(frame_layout)
         return frame
-
-    def _compact_section(self, frame: QGroupBox, toggle: QToolButton) -> QGroupBox:
-        frame.setStyleSheet(
-            "QGroupBox { margin-top: 0px; padding-top: 0px; }"
-            "QGroupBox::title { subcontrol-origin: margin; left: 0px; padding: 0px; }"
-        )
-        del toggle
-        return frame
-
-    def _collapsible_section(self, title: str, content: QWidget, expanded: bool = False) -> tuple[QGroupBox, QToolButton]:
-        toggle = QToolButton()
-        toggle.setText(title)
-        toggle.setCheckable(True)
-        toggle.setChecked(expanded)
-        toggle.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
-        toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        toggle.setAutoRaise(True)
-
-        body = QWidget()
-        body_layout = QVBoxLayout()
-        body_layout.setContentsMargins(0, 0, 0, 0)
-        body_layout.setSpacing(0)
-        body_layout.addWidget(content)
-        body.setLayout(body_layout)
-        body.setVisible(expanded)
-
-        def _sync(checked: bool) -> None:
-            body.setVisible(checked)
-            toggle.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
-
-        toggle.toggled.connect(_sync)
-
-        layout = QVBoxLayout()
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        layout.addWidget(toggle)
-        layout.addWidget(body)
-
-        frame = QGroupBox()
-        frame.setLayout(layout)
-        _sync(expanded)
-        return frame, toggle
 
     def _display_check_grid(
         self,
@@ -983,8 +1007,7 @@ class MainWindow(QMainWindow):
         for index, (label, callback) in enumerate(items):
             check = QCheckBox(label)
             check.setChecked(True)
-            if tooltips and label in tooltips:
-                check.setToolTip(tooltips[label])
+            check.setToolTip((tooltips or {}).get(label, f"画像上の{label}を表示・非表示にします。\n解析結果の数値は変わりません。"))
             check.toggled.connect(callback)
             check.toggled.connect(lambda checked, label=label: self._on_display_option_changed(label, checked))
             self.display_option_checks[label] = check
@@ -1002,15 +1025,17 @@ class MainWindow(QMainWindow):
         return spin
 
     def _step_nav_buttons(self) -> QHBoxLayout:
-        step_label = QLabel("解析ステップ")
+        self.stage_label = QLabel()
+        self.stage_label.setWordWrap(True)
         back_button = _nav_button("▲ 前へ")
         next_button = _nav_button("▼ 次へ")
+        back_button.setToolTip("前の解析ステップへ戻ります。\n後続の照射野設定が\nリセットされる場合があります。\nShift+Tabでも戻れます。")
+        next_button.setToolTip("現在の設定を確定して次のステップへ進みます。\nTabでも進めます。")
         back_button.clicked.connect(lambda: self.move_stage(True))
         next_button.clicked.connect(lambda: self.move_stage(False))
 
         layout = QHBoxLayout()
-        layout.addWidget(step_label)
-        layout.addStretch(1)
+        layout.addWidget(self.stage_label, 1)
         layout.addWidget(back_button)
         layout.addWidget(next_button)
         return layout
@@ -1141,14 +1166,16 @@ class MainWindow(QMainWindow):
         if self.analyse_dpi_mode == "manual":
             self.dpi_spin.setEnabled(True)
             self.dpi_spin.setValue(float(self.analyse_manual_dpi))
-            self.dpi_spin.setToolTip("解析に使用する手動 DPI です。")
         else:
             self.dpi_spin.setEnabled(False)
             self.dpi_spin.setValue(float(self._effective_dpi()))
-            if self._loaded_image_dpi > 0:
-                self.dpi_spin.setToolTip("画像メタデータの DPI を使用します。")
-            else:
-                self.dpi_spin.setToolTip("画像 DPI がありません。前回の手動 DPI を使います。")
+        if self.analyse_dpi_mode == "manual":
+            explanation = "入力した手動DPIを使用します。"
+        elif self._loaded_image_dpi > 0:
+            explanation = "画像メタデータのDPIを使用します。"
+        else:
+            explanation = "画像DPIがありません。\n前回の手動DPIを使います。"
+        self.dpi_label.setToolTip("DPIは1インチあたりの画素数です。\n" + explanation)
         self.dpi_spin.blockSignals(False)
 
     def _save_analyse_dpi_settings(self) -> None:
@@ -1919,6 +1946,7 @@ class MainWindow(QMainWindow):
         return max_raw - smoothed, None, None
 
     def _set_tool_mode(self, mode: str | None) -> None:
+        self._sync_operation_help(mode)
         if mode == self.tool_mode:
             self._sync_tool_buttons(mode)
             self.view.set_tool_mode(mode)
@@ -1927,6 +1955,23 @@ class MainWindow(QMainWindow):
         self.tool_mode = mode
         self._sync_tool_buttons(mode)
         self.view.set_tool_mode(mode)
+
+    def _sync_operation_help(self, mode: str | None) -> None:
+        tool_help = {
+            "pan": "移動：画像をドラッグして表示位置を調整します。\n再クリックで解析操作へ戻ります。",
+            "zoom": "ズーム：画像上を上下にドラッグして倍率を調整します。\n再クリックで解析操作へ戻ります。",
+            "circle": "円：中心からドラッグして円内の平均画素値を測定します。中心・円周の点で位置と大きさを調整できます。",
+            "rect": "矩形：対角の角へドラッグして範囲を指定し、\n平均画素値を測定します。",
+            "ruler": "定規：画像上の2点をクリックして距離を測定します。\n端点はドラッグで調整できます。",
+        }
+        stage_help = {
+            "laser": "レーザー中心：画像の水平・垂直線をドラッグして中心を合わせ、次へ進みます。",
+            "radiation": "照射野：プロファイルの境界カーソルを調整し、8点の境界を確認して次へ進みます。",
+            "light": "光照射野：画像上の辺や頂点をドラッグして境界を合わせ、次へ進みます。",
+            "result": "結果：起点と解析値を確認し、保存します。",
+        }
+        text = tool_help.get(mode, stage_help[self.current_stage])
+        self.operation_help.setText(text + "\n画像のダブルクリックで表示位置と倍率をリセットできます。")
 
     def _toggle_tool_mode(self, mode: str) -> None:
         self._set_tool_mode(None if self.tool_mode == mode else mode)
@@ -2241,6 +2286,8 @@ class MainWindow(QMainWindow):
         super().keyPressEvent(event)
 
     def _sync_stage_controls(self) -> None:
+        self.stage_label.setText(_stage_title(self.current_stage, False))
+        self._sync_operation_help(self.tool_mode)
         for stage, frame in self.stage_frames.items():
             selected = stage == self.current_stage
             frame.setTitle(_stage_title(stage, stage in self.completed_stages))
@@ -2326,7 +2373,8 @@ def _stage_title(stage: str, completed: bool) -> str:
         "result": "結果",
     }
     prefix = "✓ " if completed else ""
-    return f"{prefix}{labels[stage]}"
+    number = _stage_names().index(stage) + 1
+    return f"{prefix}{number}  {labels[stage]}"
 
 
 def _stage_names() -> tuple[str, str, str, str]:
@@ -2379,7 +2427,7 @@ def _button(text: str) -> QPushButton:
 
 
 def _tooltip_label(text: str, tooltip: str | None = None) -> QLabel:
-    label = QLabel(text)
+    label = HoverHelpLabel(text)
     if tooltip:
         label.setToolTip(tooltip)
     return label
@@ -2387,8 +2435,10 @@ def _tooltip_label(text: str, tooltip: str | None = None) -> QLabel:
 
 def _icon_tool_button(filename: str, tooltip: str) -> QToolButton:
     button = QToolButton()
+    button.setProperty("imageTool", True)
     button.setFocusPolicy(Qt.NoFocus)
     button.setToolTip(tooltip)
+    button.setAccessibleName(tooltip.split("：")[0])
     button.setIcon(QIcon(str(TOOLS_ICON_DIR / filename)))
     button.setIconSize(QSize(24, 24))
     button.setFixedSize(QSize(32, 32))
