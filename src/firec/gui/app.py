@@ -56,6 +56,7 @@ from firec.core.analysis import (
 from firec.core.geometry import Point, RotatedRect
 from firec.gui.image_view import ImageView
 from firec.gui.profile_plot import ProfilePlot
+from firec.gui.theme import GROUP_STYLE, SELECTED_GROUP_STYLE, STYLE
 from firec.storage.repository import (
     connect_database,
     delete_analysis,
@@ -159,8 +160,9 @@ TOOLS_ICON_DIR = _resource_dir("assets", "icons", "tools")
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
+        self.setStyleSheet(STYLE)
         self.setWindowTitle("FiRec")
-        self.resize(900, 680)
+        self.resize(1060, 760)
         self.original_image: np.ndarray | None = None
         self.image: np.ndarray | None = None
         self.image_path: Path | None = None
@@ -203,6 +205,7 @@ class MainWindow(QMainWindow):
         self.main_tabs.currentChanged.connect(self._on_main_tab_changed)
         self.path_edit = QLineEdit()
         self.image_info_label = QLabel("画像なし")
+        self.image_info_label.setProperty("muted", True)
         self.dpi_spin = QDoubleSpinBox()
         self.analyse_dpi_image_radio = QRadioButton("メタデータ")
         self.analyse_dpi_manual_radio = QRadioButton("手動")
@@ -234,6 +237,8 @@ class MainWindow(QMainWindow):
         self.result_tree.setHeaderLabels(["項目", "値"])
         self.result_tree.setMinimumHeight(260)
         self.results_table = QTableWidget()
+        self.results_table.setAlternatingRowColors(True)
+        self.result_tree.setAlternatingRowColors(True)
         self.results_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.result_row_ids: list[int] = []
         self.current_stage = "laser"
@@ -291,8 +296,8 @@ class MainWindow(QMainWindow):
         side_layout.addStretch(1)
 
         side_panel = _plain_frame(side_layout)
-        side_panel.setMinimumWidth(280)
-        side_panel.setMaximumWidth(340)
+        side_panel.setMinimumWidth(340)
+        side_panel.setMaximumWidth(400)
 
         side_container_layout = QVBoxLayout()
         side_container_layout.setContentsMargins(0, 0, 0, 0)
@@ -302,8 +307,8 @@ class MainWindow(QMainWindow):
         side_scroll = QScrollArea()
         side_scroll.setWidget(side_panel)
         side_scroll.setWidgetResizable(True)
-        side_scroll.setMinimumWidth(300)
-        side_scroll.setMaximumWidth(360)
+        side_scroll.setMinimumWidth(360)
+        side_scroll.setMaximumWidth(420)
         side_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         side_container_layout.addWidget(side_scroll, 1)
@@ -311,8 +316,8 @@ class MainWindow(QMainWindow):
 
         side_container = QWidget()
         side_container.setLayout(side_container_layout)
-        side_container.setMinimumWidth(300)
-        side_container.setMaximumWidth(360)
+        side_container.setMinimumWidth(360)
+        side_container.setMaximumWidth(420)
 
         left_profile_layout = QVBoxLayout()
         left_profile_layout.setContentsMargins(0, 0, 0, 0)
@@ -375,8 +380,8 @@ class MainWindow(QMainWindow):
         layout.addLayout(image_panel_layout, 1)
 
         content_layout = QHBoxLayout()
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(6)
+        content_layout.setContentsMargins(10, 10, 10, 10)
+        content_layout.setSpacing(10)
         content_layout.addLayout(layout, 1)
         content_layout.addWidget(side_container)
 
@@ -388,6 +393,7 @@ class MainWindow(QMainWindow):
         refresh_button = _button("更新")
         refresh_button.clicked.connect(self.refresh_results_table)
         export_button = _button("CSV出力")
+        export_button.setProperty("primary", True)
         export_button.clicked.connect(self.export_csv)
         delete_button = _button("削除")
         delete_button.clicked.connect(self.delete_selected_records)
@@ -766,6 +772,7 @@ class MainWindow(QMainWindow):
 
     def _result_frame(self) -> tuple[QGroupBox, list[QWidget]]:
         save_button = _button("保存")
+        save_button.setProperty("primary", True)
         save_button.clicked.connect(self.save_current_result)
 
         self.origin_combo.addItem("起点: レーザー", "laser")
@@ -2306,7 +2313,7 @@ def _frame(title: str) -> QGroupBox:
 def _plain_frame(layout: QHBoxLayout | QVBoxLayout) -> QFrame:
     frame = QFrame()
     frame.setFrameShape(QFrame.NoFrame)
-    frame.setStyleSheet("QFrame { background: #efefef; border: 0; border-radius: 4px; }")
+    frame.setProperty("card", True)
     frame.setLayout(layout)
     return frame
 
@@ -2398,11 +2405,11 @@ def _nav_button(text: str) -> QPushButton:
 
 
 def _group_style() -> str:
-    return "QGroupBox { background: #f3f3f3; border: 1px solid #b8b8b8; border-radius: 4px; margin-top: 18px; } QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
+    return GROUP_STYLE
 
 
 def _selected_group_style() -> str:
-    return "QGroupBox { background: #dfe9f6; border: 1px solid #5f8fc4; border-radius: 4px; margin-top: 18px; } QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
+    return SELECTED_GROUP_STYLE
 
 
 def _sort_profile(positions: np.ndarray, values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
