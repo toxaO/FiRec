@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QTreeWidget,
     QTreeWidgetItem,
     QToolButton,
+    QToolTip,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -57,6 +58,7 @@ from firec.core.analysis import (
 from firec.core.geometry import Point, RotatedRect
 from firec.gui.image_view import ImageView
 from firec.gui.profile_plot import ProfilePlot
+from firec.gui.stage_help import stage_help_tooltip
 from firec.gui.theme import GROUP_STYLE, SELECTED_GROUP_STYLE, STYLE, HoverHelpLabel, HoverHelpStyle, HoverHelpTextFilter
 from firec.storage.repository import (
     connect_database,
@@ -288,6 +290,9 @@ class MainWindow(QMainWindow):
             "light": light_frame,
             "result": result_frame,
         }
+        self.stage_help_buttons: dict[str, QToolButton] = {}
+        for stage, frame in self.stage_frames.items():
+            self._add_stage_help(frame, stage)
         self.stage_controls = {
             "laser": laser_controls,
             "radiation": radiation_controls,
@@ -405,6 +410,31 @@ class MainWindow(QMainWindow):
         widget = QWidget()
         widget.setLayout(content_layout)
         return widget
+
+    def _add_stage_help(self, frame: QGroupBox, stage: str) -> None:
+        button = QToolButton()
+        button.setProperty("helpButton", True)
+        button.setIcon(QIcon(str(_resource_dir("assets", "icons", "help.svg"))))
+        button.setIconSize(QSize(24, 24))
+        button.setFixedSize(28, 28)
+        button.setAccessibleName(f"{_stage_title(stage, False)}のヘルプ")
+        button.setToolTip(stage_help_tooltip(stage))
+        button.clicked.connect(
+            lambda checked=False: QToolTip.showText(
+                button.mapToGlobal(button.rect().bottomLeft()), button.toolTip(), button,
+            )
+        )
+        row = QHBoxLayout()
+        layout = frame.layout()
+        first = layout.itemAt(0).widget()
+        if isinstance(first, QLabel):
+            layout.takeAt(0)
+            row.addWidget(first, 1)
+        else:
+            row.addStretch(1)
+        row.addWidget(button)
+        layout.insertLayout(0, row)
+        self.stage_help_buttons[stage] = button
 
     def _record_tab(self) -> QWidget:
         refresh_button = _button("更新")

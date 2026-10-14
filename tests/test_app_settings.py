@@ -166,6 +166,47 @@ def test_label_help_ignores_padding_but_appears_over_text(qapp):
     label.close()
 
 
+@pytest.mark.parametrize("stage", ["laser", "radiation", "light", "result"])
+def test_stage_help_shows_on_hover_without_changing_analysis(qapp, isolated_settings, stage):
+    from PySide6.QtCore import QEvent
+    from PySide6.QtGui import QHelpEvent
+    from PySide6.QtWidgets import QToolTip
+
+    window = _make_window(qapp)
+    window.show()
+    qapp.processEvents()
+    original_stage = window.current_stage
+    window.completed_stages = {"laser", "radiation", "light"}
+    original_completed = window.completed_stages.copy()
+    button = window.stage_help_buttons[stage]
+    assert button.isEnabled()
+    assert not button.isCheckable()
+    position = button.rect().center()
+    qapp.sendEvent(button, QHelpEvent(QEvent.ToolTip, position, button.mapToGlobal(position)))
+    assert QToolTip.isVisible()
+    assert "操作の流れ" in QToolTip.text()
+    assert window.current_stage == original_stage
+    assert window.completed_stages == original_completed
+    QToolTip.hideText()
+    window.close()
+
+
+@pytest.mark.parametrize("stage", ["laser", "radiation", "light", "result"])
+def test_stage_help_click_shows_explanation_without_changing_stage(qapp, isolated_settings, stage):
+    from PySide6.QtWidgets import QToolTip
+
+    window = _make_window(qapp)
+    window.show()
+    qapp.processEvents()
+    current_stage = window.current_stage
+    window.stage_help_buttons[stage].click()
+    assert QToolTip.isVisible()
+    assert "操作の流れ" in QToolTip.text()
+    assert window.current_stage == current_stage
+    QToolTip.hideText()
+    window.close()
+
+
 def test_manual_dpi_updates_on_focus_loss(qapp, isolated_settings):
     window = _make_window(qapp)
     window.show()
