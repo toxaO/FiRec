@@ -667,11 +667,6 @@ class ImageView(QGraphicsView):
         event.accept()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
-        if event.key() in (Qt.Key_Tab, Qt.Key_Backtab):
-            if self.on_tab_navigation is not None:
-                self.on_tab_navigation(bool(event.modifiers() & Qt.ShiftModifier) or event.key() == Qt.Key_Backtab)
-            event.accept()
-            return
         if event.key() in (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down):
             if not self.editing_enabled:
                 event.accept()

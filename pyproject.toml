@@ -11,5 +11,8 @@ requires-python = ">=3.11"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+firec = ["gui/assets/*.png", "gui/assets/*.ico", "gui/assets/icons/*.svg", "gui/assets/icons/tools/*.png"]
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]

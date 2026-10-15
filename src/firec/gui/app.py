@@ -1,12 +1,12 @@
 import sys
 from contextlib import contextmanager
 from collections.abc import Callable
-from math import atan2, degrees, hypot
+from math import atan2, degrees, hypot, isfinite
 from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import QSettings, QSize, Qt
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
@@ -58,8 +58,9 @@ from firec.core.analysis import (
 from firec.core.geometry import Point, RotatedRect
 from firec.gui.image_view import ImageView
 from firec.gui.profile_plot import ProfilePlot
+from firec.gui.square_image import SquareImagePanel
 from firec.gui.stage_help import stage_help_tooltip
-from firec.gui.theme import GROUP_STYLE, SELECTED_GROUP_STYLE, STYLE, HoverHelpLabel, HoverHelpStyle, HoverHelpTextFilter
+from firec.gui.theme import GROUP_STYLE, SELECTED_GROUP_STYLE, STYLE, HoverHelpLabel, HoverHelpStyle, HoverHelpTextFilter, stage_card_style
 from firec.storage.repository import (
     connect_database,
     delete_analysis,
@@ -78,7 +79,7 @@ PROFILE_POINT_NAMES = {
 }
 
 SETTING_DEFAULTS = {
-    "analyse_dpi_mode": "image",
+    "analyse_dpi_mode": "dpi",
     "analyse_manual_dpi": 72.0,
     "radiation_boundary_percent": 50.0,
     "radiation_range_mm": 20.0,
@@ -168,7 +169,8 @@ class MainWindow(QMainWindow):
             application.setStyle(HoverHelpStyle(application.style().objectName()))
         self.setStyleSheet(STYLE)
         self.setWindowTitle("FiRec")
-        self.resize(1060, 760)
+        self.setWindowIcon(QIcon(str(_resource_dir("assets", "firec.ico"))))
+        self.resize(1000, 740)
         self.original_image: np.ndarray | None = None
         self.image: np.ndarray | None = None
         self.image_path: Path | None = None
@@ -189,8 +191,7 @@ class MainWindow(QMainWindow):
         self._manual_radiation_profile_dirty = False
         self._applying_radiation_profile_lines = False
         self._loaded_image_dpi = 0.0
-        self.analyse_dpi_mode = "image"
-        self.analyse_manual_dpi = 72.0
+        self.analyse_dpi_mode = "dpi"
         self.selected_profile_line: str | None = "bottom"
         self.tool_mode: str | None = None
         self.settings = QSettings("FiRec", "FiRec")
@@ -199,7 +200,6 @@ class MainWindow(QMainWindow):
 
         self.view = ImageView()
         self.view.on_rect_changed = self._on_rect_changed
-        self.view.on_tab_navigation = self.move_stage
         self.view.on_profile_lines_changed = self._on_profile_lines_changed
         self.view.on_profile_line_selected = self._on_profile_line_selected
         self.view.on_visible_scene_rect_changed = self._on_visible_scene_rect_changed
@@ -212,9 +212,9 @@ class MainWindow(QMainWindow):
         self.path_edit = QLineEdit()
         self.image_info_label = QLabel("画像なし")
         self.image_info_label.setProperty("muted", True)
-        self.dpi_spin = QDoubleSpinBox()
-        self.analyse_dpi_image_radio = QRadioButton("メタデータ")
-        self.analyse_dpi_manual_radio = QRadioButton("手動")
+        self.calibration_method = QComboBox()
+        self.pixel_length = QLineEdit()
+        self.dpi_input = QLineEdit()
         self.origin_combo = QComboBox()
         self.film_pixel_spin = QDoubleSpinBox()
         self.radiation_threshold_spin = QDoubleSpinBox()
@@ -252,6 +252,9 @@ class MainWindow(QMainWindow):
         self.stage_frames: dict[str, QGroupBox] = {}
         self.stage_controls: dict[str, list[QWidget]] = {}
         self.completed_stages: set[str] = set()
+        self._navigating_stage = False
+        self._radiation_profile_positions: dict[str, float] | None = None
+        self._detection_signature: tuple | None = None
         self.display_option_checks: dict[str, QCheckBox] = {}
         self.record_column_checks: dict[str, QCheckBox] = {}
         self.record_row_index_by_id: dict[int, int] = {}
@@ -259,8 +262,19 @@ class MainWindow(QMainWindow):
 
         self.status = QStatusBar()
         self.setStatusBar(self.status)
+        self.status.setSizeGripEnabled(False)
+        self.status.addPermanentWidget(self.image_info_label)
+        self.image_info_label.setContentsMargins(0, 0, 0, 0)
+        self.image_info_label.setWordWrap(False)
 
         self._build_layout()
+        # Japanese and numeric status strings can otherwise have different
+        # font fallback heights and move the cards below them on selection.
+        self.radiation_status_label.setMinimumHeight(self.radiation_status_label.sizeHint().height())
+        self.next_stage_shortcut = QShortcut(QKeySequence("Ctrl+PgDown"), self)
+        self.previous_stage_shortcut = QShortcut(QKeySequence("Ctrl+PgUp"), self)
+        self.next_stage_shortcut.activated.connect(lambda: self.move_stage(False))
+        self.previous_stage_shortcut.activated.connect(lambda: self.move_stage(True))
         self.hover_help_text_filter = HoverHelpTextFilter(self)
         for control in self.findChildren(QCheckBox) + self.findChildren(QRadioButton):
             control.installEventFilter(self.hover_help_text_filter)
@@ -284,8 +298,10 @@ class MainWindow(QMainWindow):
         radiation_frame, radiation_controls = self._radiation_frame()
         light_frame, light_controls = self._light_frame()
         result_frame, result_controls = self._result_frame()
+        resolution_frame = self._resolution_frame()
         self.stage_frames = {
             "laser": laser_frame,
+            "calibration": resolution_frame,
             "radiation": radiation_frame,
             "light": light_frame,
             "result": result_frame,
@@ -295,15 +311,14 @@ class MainWindow(QMainWindow):
             self._add_stage_help(frame, stage)
         self.stage_controls = {
             "laser": laser_controls,
+            "calibration": [],
             "radiation": radiation_controls,
             "light": light_controls,
             "result": result_controls,
         }
         display_options_frame = self._display_options_frame()
-        step_nav_widget = _plain_frame(self._step_nav_buttons())
-        step_nav_widget.setContentsMargins(0, 0, 0, 0)
-        side_layout.addWidget(self._resolution_frame())
         side_layout.addWidget(laser_frame)
+        side_layout.addWidget(resolution_frame)
         side_layout.addWidget(radiation_frame)
         side_layout.addWidget(light_frame)
         side_layout.addWidget(result_frame)
@@ -315,9 +330,9 @@ class MainWindow(QMainWindow):
         side_container_layout = QVBoxLayout()
         side_container_layout.setContentsMargins(0, 0, 0, 0)
         side_container_layout.setSpacing(6)
-        side_container_layout.addWidget(step_nav_widget)
 
         side_scroll = QScrollArea()
+        self.analysis_scroll = side_scroll
         side_scroll.setWidget(side_panel)
         side_scroll.setWidgetResizable(True)
         side_scroll.setMinimumWidth(360)
@@ -331,63 +346,26 @@ class MainWindow(QMainWindow):
         side_container.setMinimumWidth(360)
         side_container.setMaximumWidth(460)
 
-        left_profile_layout = QVBoxLayout()
-        left_profile_layout.setContentsMargins(0, 0, 0, 0)
-        left_profile_layout.setSpacing(3)
-        left_profile_layout.addWidget(self.left_profile_plot, 1)
-
-        right_profile_layout = QVBoxLayout()
-        right_profile_layout.setContentsMargins(0, 0, 0, 0)
-        right_profile_layout.setSpacing(3)
-        right_profile_layout.addWidget(self.right_profile_plot, 1)
-
-        image_row = QHBoxLayout()
-        image_row.setContentsMargins(0, 0, 0, 0)
-        image_row.setSpacing(3)
-        image_row.addLayout(left_profile_layout)
-        image_row.addWidget(self.view, 1)
-        image_row.addLayout(right_profile_layout)
-
-        top_profile_layout = QVBoxLayout()
-        top_profile_layout.setContentsMargins(0, 0, 0, 0)
-        top_profile_layout.setSpacing(3)
-        top_profile_layout.addWidget(self.top_profile_plot)
-
-        bottom_profile_layout = QVBoxLayout()
-        bottom_profile_layout.setContentsMargins(0, 0, 0, 0)
-        bottom_profile_layout.setSpacing(3)
-        bottom_profile_layout.addWidget(self.bottom_profile_plot)
-
-        top_profile_row = QHBoxLayout()
-        top_profile_row.setContentsMargins(0, 0, 0, 0)
-        top_profile_row.setSpacing(3)
-        top_profile_row.addSpacing(40)
-        top_profile_row.addLayout(top_profile_layout, 1)
-        top_profile_row.addSpacing(40)
-
-        bottom_profile_row = QHBoxLayout()
-        bottom_profile_row.setContentsMargins(0, 0, 0, 0)
-        bottom_profile_row.setSpacing(3)
-        bottom_profile_row.addSpacing(40)
-        bottom_profile_row.addLayout(bottom_profile_layout, 1)
-        bottom_profile_row.addSpacing(40)
-
         image_layout = QVBoxLayout()
-        image_layout.setContentsMargins(8, 8, 8, 8)
+        image_layout.setContentsMargins(16, 16, 16, 16)
         image_layout.setSpacing(3)
-        image_layout.addLayout(top_profile_row)
-        image_layout.addLayout(image_row, 1)
-        image_layout.addLayout(bottom_profile_row)
+        self.square_image = SquareImagePanel(self.view, self.profile_plots)
+        image_layout.addWidget(self.square_image, 1)
         image_layout.addWidget(self._tool_frame())
 
         image_panel_layout = QVBoxLayout()
         image_panel_layout.setContentsMargins(0, 0, 0, 0)
-        image_panel_layout.setSpacing(6)
-        image_panel_layout.addWidget(_plain_frame(self._load_bar()))
-        image_panel_layout.addWidget(_plain_frame(image_layout), 1)
+        image_panel_layout.setSpacing(3)
+        file_panel = QWidget()
+        file_panel.setLayout(self._load_bar())
+        image_panel_layout.addWidget(file_panel)
+        image_panel_layout.addLayout(image_layout, 1)
+        self.image_info_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.image_info_label.ensurePolished()
+        self.image_info_label.setFixedHeight(self.image_info_label.fontMetrics().lineSpacing())
 
         layout = QVBoxLayout()
-        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
         layout.addLayout(image_panel_layout, 1)
 
@@ -401,9 +379,9 @@ class MainWindow(QMainWindow):
         self.analysis_splitter.setChildrenCollapsible(False)
         self.analysis_splitter.addWidget(image_panel)
         self.analysis_splitter.addWidget(side_container)
-        self.analysis_splitter.setStretchFactor(0, 5)
-        self.analysis_splitter.setStretchFactor(1, 3)
-        self.analysis_splitter.setSizes([650, 380])
+        self.analysis_splitter.setStretchFactor(0, 1)
+        self.analysis_splitter.setStretchFactor(1, 0)
+        self.analysis_splitter.setSizes([610, 366])
         self.analysis_splitter.handle(1).setToolTip("境界を左右にドラッグすると、\n画像と解析パネルの幅を調整できます。")
         content_layout.addWidget(self.analysis_splitter)
 
@@ -412,6 +390,15 @@ class MainWindow(QMainWindow):
         return widget
 
     def _add_stage_help(self, frame: QGroupBox, stage: str) -> None:
+        frame.setTitle(_stage_title(stage, False))
+        frame.setObjectName("analysisStep")
+
+        def select_frame(event) -> None:
+            if event.button() == Qt.LeftButton:
+                self.go_to_stage(stage)
+            event.accept()
+
+        frame.mousePressEvent = select_frame
         button = QToolButton()
         button.setProperty("helpButton", True)
         button.setIcon(QIcon(str(_resource_dir("assets", "icons", "help.svg"))))
@@ -424,16 +411,18 @@ class MainWindow(QMainWindow):
                 button.mapToGlobal(button.rect().bottomLeft()), button.toolTip(), button,
             )
         )
-        row = QHBoxLayout()
         layout = frame.layout()
-        first = layout.itemAt(0).widget()
-        if isinstance(first, QLabel):
-            layout.takeAt(0)
-            row.addWidget(first, 1)
+        first = layout.itemAt(0)
+        if isinstance(first.layout(), QHBoxLayout):
+            first.layout().addWidget(button, 0, Qt.AlignTop)
         else:
-            row.addStretch(1)
-        row.addWidget(button)
-        layout.insertLayout(0, row)
+            first = layout.takeAt(0)
+            row = QHBoxLayout()
+            row.addWidget(first.widget(), 1)
+            if isinstance(first.widget(), QPushButton):
+                row.addStretch(1)
+            row.addWidget(button, 0, Qt.AlignTop)
+            layout.insertLayout(0, row)
         self.stage_help_buttons[stage] = button
 
     def _record_tab(self) -> QWidget:
@@ -489,7 +478,7 @@ class MainWindow(QMainWindow):
         self.path_edit.returnPressed.connect(self.load_from_path_edit)
         self.path_edit.setPlaceholderText("TIFF画像パス")
         self.path_edit.setMinimumWidth(220)
-        self.image_info_label.setWordWrap(True)
+        self.image_info_label.setWordWrap(False)
 
         top_row = QHBoxLayout()
         top_row.addWidget(_tooltip_label("画像", "解析するTIFF画像のパスを入力します。\nEnterまたは「開く」で読み込みます。"))
@@ -501,39 +490,31 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(4)
         layout.addLayout(top_row)
-        layout.addWidget(self.image_info_label)
         return layout
 
     def _resolution_frame(self) -> QGroupBox:
 
-        self.analyse_dpi_group = QButtonGroup(self)
-        self.analyse_dpi_group.addButton(self.analyse_dpi_image_radio)
-        self.analyse_dpi_group.addButton(self.analyse_dpi_manual_radio)
-        self.analyse_dpi_image_radio.toggled.connect(
-            lambda checked: checked and self._set_analyse_dpi_mode("image")
-        )
-        self.analyse_dpi_manual_radio.toggled.connect(
-            lambda checked: checked and self._set_analyse_dpi_mode("manual")
-        )
-
-        self.dpi_spin.setRange(0.0, 10000.0)
-        self.dpi_spin.setDecimals(1)
-        self.dpi_spin.setSingleStep(1.0)
-        self.dpi_spin.setSpecialValueText("px")
-        self.dpi_spin.setSuffix(" dpi")
-        self.dpi_spin.setMaximumWidth(110)
-        self.analyse_dpi_image_radio.setToolTip("TIFF画像に記録された解像度を使用します。\n解像度がない場合は前回の手動DPI（初期72）を使用します。")
-        self.analyse_dpi_manual_radio.setToolTip("入力したDPIを使用して、画素単位の値をmmへ換算します。")
-        self.dpi_spin.valueChanged.connect(lambda value: self._on_dpi_changed())
-        self._wire_spinbox_commit(self.dpi_spin, self._on_dpi_changed)
-
-        layout = QHBoxLayout()
-        layout.addWidget(self.analyse_dpi_image_radio)
-        layout.addWidget(self.analyse_dpi_manual_radio)
-        self.dpi_label = _tooltip_label("DPI")
-        layout.addWidget(self.dpi_label)
-        layout.addWidget(self.dpi_spin)
-        layout.addStretch(1)
+        for label, mode in (("DPI入力", "dpi"), ("TIFFタグ", "tag"), ("mm/px入力", "numeric"), ("未校正", "none")):
+            self.calibration_method.addItem(label, mode)
+        self.pixel_length.setPlaceholderText("例：0.1")
+        self.pixel_length.textChanged.connect(self._on_dpi_changed)
+        self.dpi_input.setPlaceholderText("例：300")
+        self.dpi_input.textChanged.connect(self._on_dpi_changed)
+        self.calibration_method.currentIndexChanged.connect(
+            lambda: self._set_analyse_dpi_mode(self.calibration_method.currentData()))
+        layout = QVBoxLayout()
+        row = QHBoxLayout()
+        self.dpi_label = _tooltip_label("解像度", "DPIまたはmm/pxで校正値を入力します。\nTIFFタグはDPIへ換算して表示します。\n未校正はpxで評価します。")
+        row.addWidget(self.dpi_label)
+        row.addWidget(self.calibration_method)
+        row.addWidget(self.pixel_length)
+        row.addWidget(self.dpi_input)
+        self.spacing_unit_label = QLabel("mm/px")
+        row.addWidget(self.spacing_unit_label)
+        layout.addLayout(row)
+        self.calibration_label = QLabel()
+        self.calibration_label.setWordWrap(True)
+        layout.addWidget(self.calibration_label)
         frame = _frame("解像度")
         frame.setLayout(layout)
         return frame
@@ -554,7 +535,7 @@ class MainWindow(QMainWindow):
         layout.addStretch(1)
         return layout
 
-    def _tool_frame(self) -> QGroupBox:
+    def _tool_frame(self) -> QWidget:
         self.pan_tool_button = _icon_tool_button("tools_hand.png", "移動：画像をドラッグして表示位置を調整します。\n再クリックで解析操作へ戻ります。")
         self.zoom_tool_button = _icon_tool_button("tools_loupe.png", "ズーム：画像上を上下にドラッグして倍率を調整します。\n再クリックで解析操作へ戻ります。")
         self.circle_tool_button = _icon_tool_button("tools_circle.png", "円：中心からドラッグして円を描き、\n円内の平均画素値を測定します。")
@@ -592,6 +573,7 @@ class MainWindow(QMainWindow):
         tool_row = QHBoxLayout()
         tool_row.setContentsMargins(0, 0, 0, 0)
         tool_row.setSpacing(2)
+        tool_row.addWidget(reset_button)
         for button in (
             self.pan_tool_button,
             self.zoom_tool_button,
@@ -604,7 +586,6 @@ class MainWindow(QMainWindow):
         self.tool_result_label.setMinimumWidth(120)
         self.tool_result_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         tool_row.addWidget(self.tool_result_label, 1)
-        tool_row.addWidget(reset_button)
 
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
@@ -616,7 +597,7 @@ class MainWindow(QMainWindow):
         self.operation_help.setMinimumHeight(self.operation_help.fontMetrics().lineSpacing() * 2)
         layout.addWidget(self.operation_help)
 
-        frame = _frame("ツール")
+        frame = _frame("画像ツール")
         frame.setLayout(layout)
         return frame
 
@@ -808,6 +789,11 @@ class MainWindow(QMainWindow):
         layout.addWidget(reset_button)
 
         frame = _frame("照射野")
+        self.detect_button = _button("照射野を検出")
+        self.detect_button.setProperty("primary", True)
+        self.detect_button.clicked.connect(self.detect_radiation_field)
+        self.detect_button.setToolTip("現在の基準点と設定で照射野を検出します。\n光照射野の調整内容は保持します。")
+        layout.addWidget(self.detect_button)
         frame.setLayout(layout)
         frame.mousePressEvent = lambda event: self.go_to_stage("radiation")
         return frame, [
@@ -827,7 +813,7 @@ class MainWindow(QMainWindow):
     def _light_frame(self) -> tuple[QGroupBox, list[QWidget]]:
         reset_button = _button("リセット")
         reset_button.clicked.connect(self.reset_light_field)
-        reset_button.setToolTip("光照射野の境界を照射野の境界に合わせて初期化します。")
+        reset_button.setToolTip("照射野がある場合はその境界へ戻します。\nまだ照射野がない場合は画像中央の矩形へ戻します。")
 
         layout = QVBoxLayout()
         light_hint = QLabel("光照射野境界を直接ドラッグして位置を決めます。")
@@ -843,6 +829,7 @@ class MainWindow(QMainWindow):
 
     def _result_frame(self) -> tuple[QGroupBox, list[QWidget]]:
         save_button = _button("保存")
+        self.save_button = save_button
         save_button.setProperty("primary", True)
         save_button.setToolTip("現在の照射野・光照射野の解析結果を記録に保存します。")
         save_button.clicked.connect(self.save_current_result)
@@ -854,11 +841,18 @@ class MainWindow(QMainWindow):
 
         controls = QHBoxLayout()
         controls.addStretch(1)
-        controls.addWidget(_tooltip_label("起点", "結果の中心座標を表示・保存するときの起点を選びます。"))
-        controls.addWidget(self.origin_combo)
         controls.addWidget(save_button)
 
         layout = QVBoxLayout()
+        origin_row = QHBoxLayout()
+        origin_row.addWidget(_tooltip_label("起点", "結果の中心座標を表示・保存するときの起点を選びます。"))
+        origin_row.addWidget(self.origin_combo, 1)
+        layout.addLayout(origin_row)
+        self.result_validation_label = QLabel()
+        self.result_validation_label.setWordWrap(True)
+        self.result_validation_label.setProperty("muted", True)
+        self.result_validation_label.hide()
+        layout.addWidget(self.result_validation_label)
         layout.addWidget(self.result_tree)
         layout.addLayout(controls)
 
@@ -1054,22 +1048,6 @@ class MainWindow(QMainWindow):
         spin.setMaximumWidth(110)
         return spin
 
-    def _step_nav_buttons(self) -> QHBoxLayout:
-        self.stage_label = QLabel()
-        self.stage_label.setWordWrap(True)
-        back_button = _nav_button("▲ 前へ")
-        next_button = _nav_button("▼ 次へ")
-        back_button.setToolTip("前の解析ステップへ戻ります。\n後続の照射野設定が\nリセットされる場合があります。\nShift+Tabでも戻れます。")
-        next_button.setToolTip("現在の設定を確定して次のステップへ進みます。\nTabでも進めます。")
-        back_button.clicked.connect(lambda: self.move_stage(True))
-        next_button.clicked.connect(lambda: self.move_stage(False))
-
-        layout = QHBoxLayout()
-        layout.addWidget(self.stage_label, 1)
-        layout.addWidget(back_button)
-        layout.addWidget(next_button)
-        return layout
-
     def browse_image_path(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
@@ -1123,6 +1101,9 @@ class MainWindow(QMainWindow):
             self.view.set_ruler_points(None)
             self._set_tool_mode(None)
             self.completed_stages = set()
+            self._radiation_profile_positions = None
+            self._detection_signature = None
+            self.result_validation_label.hide()
             self.path_edit.setText(str(path))
             self._save_settings()
             self.activate_stage("laser")
@@ -1161,58 +1142,71 @@ class MainWindow(QMainWindow):
 
     def _apply_default_dpi(self, path: Path) -> None:
         dpi = tiff_image_dpi(path)
-        self._loaded_image_dpi = float(dpi) if dpi is not None and dpi > 0 else 0.0
+        self._loaded_image_dpi = float(dpi) if dpi is not None and isfinite(dpi) and dpi > 0 else 0.0
         self._sync_analyse_dpi_ui()
+
+    def _calibration_error(self) -> str:
+        if self.analyse_dpi_mode == "tag" and self._loaded_image_dpi <= 0:
+            return "TIFFに利用可能な解像度タグがありません。"
+        if self.analyse_dpi_mode == "numeric":
+            try:
+                spacing = float(self.pixel_length.text())
+                if not isfinite(spacing) or spacing <= 0 or not isfinite(25.4 / spacing):
+                    raise ValueError()
+            except (ValueError, OverflowError):
+                return "正の有限値をmm/pxで入力してください。"
+        if self.analyse_dpi_mode == "dpi":
+            try:
+                dpi = float(self.dpi_input.text())
+                if not isfinite(dpi) or dpi <= 0 or not isfinite(25.4 / dpi):
+                    raise ValueError()
+            except (ValueError, OverflowError):
+                return "正の有限値をDPIで入力してください。"
+        return ""
 
     def _effective_dpi(self) -> float:
-        if self.analyse_dpi_mode == "manual" and self.analyse_manual_dpi > 0:
-            return float(self.analyse_manual_dpi)
-        if self._loaded_image_dpi > 0:
-            return float(self._loaded_image_dpi)
-        if self.analyse_manual_dpi > 0:
-            return float(self.analyse_manual_dpi)
-        return 72.0
+        if self._calibration_error():
+            return 0.0
+        if self.analyse_dpi_mode == "numeric":
+            return 25.4 / float(self.pixel_length.text())
+        if self.analyse_dpi_mode == "dpi":
+            return float(self.dpi_input.text())
+        return self._loaded_image_dpi if self.analyse_dpi_mode == "tag" else 0.0
 
     def _set_analyse_dpi_mode(self, mode: str) -> None:
-        if mode not in ("image", "manual") or mode == self.analyse_dpi_mode:
-            self._sync_analyse_dpi_ui()
+        if mode not in ("none", "tag", "numeric", "dpi"):
             return
+        changed = mode != self.analyse_dpi_mode
         self.analyse_dpi_mode = mode
-        self._save_analyse_dpi_settings()
         self._sync_analyse_dpi_ui()
-        self._on_analyse_dpi_updated()
+        if changed:
+            self._save_analyse_dpi_settings()
+            self._on_analyse_dpi_updated()
 
     def _sync_analyse_dpi_ui(self) -> None:
-        if not hasattr(self, "analyse_dpi_image_radio"):
-            return
-        self.analyse_dpi_image_radio.blockSignals(True)
-        self.analyse_dpi_manual_radio.blockSignals(True)
-        self.analyse_dpi_image_radio.setChecked(self.analyse_dpi_mode == "image")
-        self.analyse_dpi_manual_radio.setChecked(self.analyse_dpi_mode == "manual")
-        self.analyse_dpi_image_radio.blockSignals(False)
-        self.analyse_dpi_manual_radio.blockSignals(False)
-
-        self.dpi_spin.blockSignals(True)
-        if self.analyse_dpi_mode == "manual":
-            self.dpi_spin.setEnabled(True)
-            self.dpi_spin.setValue(float(self.analyse_manual_dpi))
-        else:
-            self.dpi_spin.setEnabled(False)
-            self.dpi_spin.setValue(float(self._effective_dpi()))
-        if self.analyse_dpi_mode == "manual":
-            explanation = "入力した手動DPIを使用します。"
-        elif self._loaded_image_dpi > 0:
-            explanation = "画像メタデータのDPIを使用します。"
-        else:
-            explanation = "画像DPIがありません。\n前回の手動DPIを使います。"
-        self.dpi_label.setToolTip("DPIは1インチあたりの画素数です。\n" + explanation)
-        self.dpi_spin.blockSignals(False)
+        self.calibration_method.blockSignals(True)
+        self.calibration_method.setCurrentIndex(self.calibration_method.findData(self.analyse_dpi_mode))
+        self.calibration_method.blockSignals(False)
+        numeric = self.analyse_dpi_mode == "numeric"
+        self.pixel_length.setEnabled(numeric)
+        self.pixel_length.setVisible(numeric)
+        self.dpi_input.setVisible(self.analyse_dpi_mode in ("dpi", "none"))
+        self.dpi_input.setEnabled(self.analyse_dpi_mode == "dpi")
+        self.spacing_unit_label.setText("mm/px" if numeric else "DPI")
+        self.spacing_unit_label.setVisible(self.analyse_dpi_mode != "tag")
+        dpi = self._effective_dpi()
+        self.calibration_label.setText(self._calibration_error() or (f"{dpi:.8g} DPI" if dpi > 0 else "未校正：pxで評価します"))
+        unit = " mm" if dpi > 0 else " px"
+        self.radiation_center_spin.setSuffix(unit)
+        self.radiation_profile_distance_spin.setSuffix(unit)
 
     def _save_analyse_dpi_settings(self) -> None:
         if self._settings_write_suppressed:
             return
         self.settings.setValue("analyse_dpi_mode", self.analyse_dpi_mode)
-        self.settings.setValue("analyse_manual_dpi", self.analyse_manual_dpi)
+        self.settings.setValue("analyse_pixel_length", self.pixel_length.text())
+        if self.analyse_dpi_mode == "dpi":
+            self.settings.setValue("analyse_input_dpi", self.dpi_input.text())
 
     def _on_analyse_dpi_updated(self) -> None:
         if self.current_stage == "radiation" and self.radiation_profile_mode == "auto":
@@ -1227,7 +1221,7 @@ class MainWindow(QMainWindow):
         if center is None:
             return None
         dpi = self._effective_dpi()
-        distance_px = self.radiation_profile_distance_mm * dpi / 25.4
+        distance_px = self.radiation_profile_distance_mm * (dpi / 25.4 if dpi > 0 else 1.0)
         height, width = self.image.shape[:2]
         return {
             "top": max(0.0, min(height - 1.0, center.y - distance_px)),
@@ -1284,7 +1278,8 @@ class MainWindow(QMainWindow):
         self.radiation_profile_mode = mode
         if hasattr(self, "radiation_profile_mode_stack"):
             self.radiation_profile_mode_stack.setCurrentIndex(0 if mode == "auto" else 1)
-        self.view.set_profile_lines_editable(mode == "manual")
+        if self.current_stage == "radiation":
+            self.view.set_profile_lines_editable(mode == "manual")
         if update_ui:
             self.radiation_profile_auto_radio.blockSignals(True)
             self.radiation_profile_manual_radio.blockSignals(True)
@@ -1296,23 +1291,28 @@ class MainWindow(QMainWindow):
             self._refresh_radiation_profile_lines(force_manual_sync=mode == "manual" and not self._manual_radiation_profile_dirty)
             self._sync_radiation_step_ui()
         self._save_radiation_settings()
+        self._sync_stage_controls()
 
     def _on_radiation_profile_distance_changed(self) -> None:
         self.radiation_profile_distance_mm = self.radiation_profile_distance_spin.value()
         self._save_radiation_settings()
         if self.current_stage == "radiation" and self.radiation_profile_mode == "auto":
             self._refresh_radiation_profile_lines()
+        self._sync_stage_controls()
 
     def _restore_settings(self) -> None:
         with self._suspend_settings_writes():
             last_path = self.settings.value("last_image_path", "", str)
             if last_path:
                 self.path_edit.setText(last_path)
-            manual_dpi = self._settings_float("analyse_manual_dpi", SETTING_DEFAULTS["analyse_manual_dpi"])
-            self.analyse_manual_dpi = manual_dpi if manual_dpi > 0 else SETTING_DEFAULTS["analyse_manual_dpi"]
-            mode = self.settings.value("analyse_dpi_mode", SETTING_DEFAULTS["analyse_dpi_mode"], str) or SETTING_DEFAULTS["analyse_dpi_mode"]
-            self.analyse_dpi_mode = mode if mode in ("image", "manual") else SETTING_DEFAULTS["analyse_dpi_mode"]
-            self.dpi_spin.setValue(self.analyse_manual_dpi)
+            manual_dpi = self._settings_float("analyse_manual_dpi", 72.0)
+            mode = self.settings.value("analyse_dpi_mode", "dpi", str)
+            self.analyse_dpi_mode = {"image": "tag", "manual": "numeric"}.get(mode, mode)
+            if self.analyse_dpi_mode not in ("none", "tag", "numeric", "dpi"):
+                self.analyse_dpi_mode = "dpi"
+            spacing = self.settings.value("analyse_pixel_length", format(25.4 / manual_dpi, ".12g") if isfinite(manual_dpi) and manual_dpi > 0 else "", str)
+            self.pixel_length.setText(spacing)
+            self.dpi_input.setText(self.settings.value("analyse_input_dpi", format(manual_dpi, ".12g"), str))
 
             self.film_pixel_spin.setValue(self._settings_float("radiation_film_baseline_px", 0.0))
             self.radiation_threshold_spin.setValue(self._settings_float("radiation_boundary_percent", SETTING_DEFAULTS["radiation_boundary_percent"]))
@@ -1371,14 +1371,26 @@ class MainWindow(QMainWindow):
         handler()
 
     def _on_dpi_changed(self) -> None:
-        if self.analyse_dpi_mode != "manual":
-            self._sync_analyse_dpi_ui()
-            return
-        self.analyse_manual_dpi = float(self.dpi_spin.value()) if self.dpi_spin.value() > 0 else 72.0
         self._save_analyse_dpi_settings()
+        self._sync_analyse_dpi_ui()
         self._on_analyse_dpi_updated()
 
     def activate_stage(self, stage: str) -> None:
+        if stage not in _stage_names():
+            return
+        if self.current_stage == "radiation":
+            self._radiation_profile_positions = self._manual_radiation_profile_positions_from_view()
+        if stage == "light" and self.light_rect is None:
+            self.reset_light_field()
+        self._navigating_stage = True
+        try:
+            self._activate_stage_display(stage)
+        finally:
+            self._navigating_stage = False
+        self._sync_stage_controls()
+        self._update_result_label()
+
+    def _activate_stage_display(self, stage: str) -> None:
         self.current_stage = stage
         if stage == "laser":
             self._set_laser_profile_lines()
@@ -1397,7 +1409,10 @@ class MainWindow(QMainWindow):
             self.view.set_visible_profile_lines(None)
             self.view.set_profile_orientation(None)
             self.view.set_profile_lines_visible(True)
-            self._set_radiation_profile_mode(self.radiation_profile_mode, update_ui=True)
+            if self._radiation_profile_positions is None:
+                self._radiation_profile_positions = self._auto_radiation_profile_positions()
+            self._apply_radiation_profile_positions(self._radiation_profile_positions)
+            self.view.set_profile_lines_editable(self.radiation_profile_mode == "manual")
         elif stage == "light":
             self.view.select_profile_line(None)
             self.view.set_active_field("light")
@@ -1419,77 +1434,23 @@ class MainWindow(QMainWindow):
             self._on_profile_lines_changed(self.view.profile_lines())
         self._sync_laser_step_ui()
         self._sync_radiation_step_ui()
+        self._sync_stage_controls()
         self._sync_result_center_points()
         self.view.setVisible(True)
         self.main_tabs.setCurrentIndex(0)
-        self.view.setFocus()
 
     def go_to_stage(self, stage: str) -> None:
-        stages = _stage_names()
-        if stage not in stages:
+        if stage not in _stage_names():
             return
-        current_index = stages.index(self.current_stage)
-        target_index = stages.index(stage)
-        if target_index < current_index:
-            self._reset_after_stage(stage)
-            self.activate_stage(stage)
-            return
-        while self.current_stage != stage:
-            previous_stage = self.current_stage
-            self.move_stage(False)
-            if self.current_stage == previous_stage:
-                return
+        self.activate_stage(stage)
 
     def move_stage(self, backward: bool = False) -> None:
-        if self.current_stage == "laser":
-            if backward:
-                return
-            if self.image is None:
-                QMessageBox.warning(self, "画像なし", "照射野設定ステップへ進む前に画像を読み込んでください。")
-                return
-            self.confirm_laser_center()
-            return
-        if self.current_stage == "radiation" and self.image is None:
-            if not backward:
-                QMessageBox.warning(self, "画像なし", "光照射野設定ステップへ進む前に画像を読み込んでください。")
-            return
-        if self.current_stage == "radiation" and self.image is not None and not backward:
-            self._capture_radiation_points()
-            if self._build_radiation_from_points():
-                self.confirm_radiation_field()
-                return
-            QMessageBox.warning(self, "照射野設定 未完了", "光照射野設定ステップへ進む前にすべての照射野点を設定してください。")
-            return
-        if self.current_stage == "light" and not backward:
-            self.confirm_light_field()
+        if self.main_tabs.currentIndex() != 0:
             return
         stages = _stage_names()
         index = stages.index(self.current_stage)
-        next_index = index - 1 if backward else index + 1
-        next_index = max(0, min(len(stages) - 1, next_index))
-        if backward:
-            self._reset_after_stage(stages[next_index])
-        self.activate_stage(stages[next_index])
-
-    def _reset_after_stage(self, stage: str) -> None:
-        if stage == "laser":
-            self.radiation_rect = None
-            self.radiation_polygon = None
-            self.light_rect = None
-            self.radiation_points = {}
-            self.view.set_radiation_points(self.radiation_points)
-            self.view.set_radiation_rect(None)
-            self.view.set_light_rect(None)
-            self.completed_stages.clear()
-        elif stage == "radiation":
-            self.light_rect = None
-            self.view.set_light_rect(None)
-            self.completed_stages.discard("radiation")
-            self.completed_stages.discard("light")
-        elif stage == "light":
-            self.completed_stages.discard("light")
-        self._sync_result_center_points()
-        self._update_result_label()
+        target = max(0, min(len(stages) - 1, index + (-1 if backward else 1)))
+        self.go_to_stage(stages[target])
 
     def _set_default_profile_lines(self) -> None:
         self._refresh_radiation_profile_lines(force_manual_sync=self.radiation_profile_mode == "manual" and not self._manual_radiation_profile_dirty)
@@ -1528,7 +1489,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "レーザー中心なし", "レーザー中心を設定する前に画像を読み込んでください。")
             return
         self.completed_stages.add("laser")
-        self.activate_stage("radiation")
+        self._sync_stage_controls()
 
     def reset_laser_center(self) -> None:
         if self.image is None:
@@ -1553,12 +1514,14 @@ class MainWindow(QMainWindow):
                 return
         if self.radiation_rect is None:
             return
-        self.light_rect = self.radiation_rect
-        self.view.set_light_rect(self.light_rect)
-        if self.radiation_polygon is not None:
-            self.view.set_light_polygon(self.radiation_polygon)
+        if self.light_rect is None:
+            self.light_rect = self.radiation_rect
+            self.view.set_light_rect(self.light_rect)
+            if self.radiation_polygon is not None:
+                self.view.set_light_polygon(self.radiation_polygon)
         self.completed_stages.add("radiation")
-        self.activate_stage("light")
+        self._detection_signature = self._radiation_input_signature()
+        self._sync_stage_controls()
         self._update_result_label()
 
     def reset_radiation_field(self) -> None:
@@ -1592,16 +1555,17 @@ class MainWindow(QMainWindow):
         self.status.showMessage("照射野プロファイル線をリセットしました。")
 
     def reset_light_field(self) -> None:
-        if self.current_stage != "light":
+        if self.image is None:
             return
-        if self.radiation_rect is None:
-            QMessageBox.warning(self, "照射野なし", "光照射野をリセットする前に照射野を設定してください。")
-            return
-        self.light_rect = self.radiation_rect
+        if self.radiation_rect is not None:
+            self.light_rect = self.radiation_rect
+        else:
+            height, width = self.image.shape[:2]
+            self.light_rect = RotatedRect(Point((width - 1) / 2, (height - 1) / 2), width * 0.6, height * 0.6, 0)
         self.view.set_light_rect(self.light_rect)
-        if self.radiation_polygon is not None:
+        if self.radiation_rect is not None and self.radiation_polygon is not None:
             self.view.set_light_polygon(self.radiation_polygon)
-        self.status.showMessage("光照射野を照射野に戻しました。")
+        self.status.showMessage("光照射野を初期位置に戻しました。")
         self._update_result_label()
 
     def confirm_light_field(self) -> None:
@@ -1611,7 +1575,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "光照射野なし", "光照射野を設定する前に照射野を設定してください。")
             return
         self.completed_stages.add("light")
-        self.activate_stage("result")
         self._update_result_label()
 
     def move_active_rect(self, dx: float, dy: float) -> None:
@@ -1627,7 +1590,8 @@ class MainWindow(QMainWindow):
         self.view.setFocus()
 
     def save_current_result(self) -> None:
-        if self.current_stage != "result":
+        if self._result_errors():
+            QMessageBox.warning(self, "保存できません", "\n".join(self._result_errors()))
             return
         if self.image_path is None or self.radiation_rect is None or self.light_rect is None:
             QMessageBox.warning(self, "保存できません", "保存する前に両方の矩形を設定してください。")
@@ -1715,12 +1679,12 @@ class MainWindow(QMainWindow):
             return
         if self.current_stage == "laser":
             self._sync_laser_center_from_lines(lines)
-        if self.current_stage == "radiation" and self.radiation_profile_mode == "manual" and not self._applying_radiation_profile_lines:
+        if self.current_stage == "radiation" and self.radiation_profile_mode == "manual" and not self._applying_radiation_profile_lines and not self._navigating_stage:
             self.manual_radiation_profile_lines = self._manual_radiation_profile_positions_from_view()
             self._manual_radiation_profile_dirty = self.manual_radiation_profile_lines is not None
         active_lines = {"left", "bottom"} if self.current_stage == "laser" else set(lines)
         changed_lines = self._changed_profile_lines(lines)
-        if self.current_stage == "radiation":
+        if self.current_stage == "radiation" and not self._navigating_stage:
             self._auto_update_radiation_cursors(lines, changed_lines)
         for name, plot in self.profile_plots.items():
             if name not in active_lines:
@@ -1745,6 +1709,7 @@ class MainWindow(QMainWindow):
             )
         self._sync_laser_step_ui()
         self._sync_radiation_step_ui()
+        self._sync_stage_controls()
 
     def _on_profile_cursor_moved(self, name: str, value: float) -> None:
         self.profile_cursors[name] = value
@@ -1756,6 +1721,7 @@ class MainWindow(QMainWindow):
             self._update_result_label()
             return
         self._sync_radiation_step_ui()
+        self._sync_stage_controls()
 
     def _on_profile_line_selected(self, line_name: str | None) -> None:
         self.selected_profile_line = line_name
@@ -1792,6 +1758,7 @@ class MainWindow(QMainWindow):
     def _on_radiation_setting_changed(self) -> None:
         self._save_radiation_settings()
         self._redetect_radiation_lines()
+        self._sync_stage_controls()
 
     def _on_result_origin_changed(self) -> None:
         if not self._settings_write_suppressed:
@@ -1821,7 +1788,7 @@ class MainWindow(QMainWindow):
                 lambda index, analysis_id=analysis_id, origin_widget=origin_widget: self._on_record_metadata_changed(
                     analysis_id,
                     str(origin_widget.currentData() or "laser"),
-                    self._record_dpi_from_widget(row_index),
+                    float(self.record_rows_by_id[analysis_id]["dpi"]),
                 )
             )
             self.results_table.setCellWidget(row_index, 2, origin_widget)
@@ -1832,7 +1799,7 @@ class MainWindow(QMainWindow):
         dpi_widget = self.results_table.cellWidget(row_index, 3)
         if not isinstance(dpi_widget, QDoubleSpinBox):
             dpi_widget = QDoubleSpinBox()
-            dpi_widget.setRange(0.0, 10000.0)
+            dpi_widget.setRange(0.0, sys.float_info.max)
             dpi_widget.setDecimals(1)
             dpi_widget.setSingleStep(1.0)
             dpi_widget.setSpecialValueText("px")
@@ -1891,7 +1858,7 @@ class MainWindow(QMainWindow):
             return
         updated_row = dict(row)
         updated_row["origin"] = origin
-        updated_row["dpi"] = _round1(dpi)
+        updated_row["dpi"] = float(dpi)
         self.record_rows_by_id[analysis_id] = updated_row
         self._refresh_record_row(analysis_id)
 
@@ -1995,9 +1962,10 @@ class MainWindow(QMainWindow):
             "ruler": "定規：画像上の2点をクリックして距離を測定します。\n端点はドラッグで調整できます。",
         }
         stage_help = {
-            "laser": "レーザー中心：画像の水平・垂直線をドラッグして中心を合わせ、次へ進みます。",
-            "radiation": "照射野：プロファイルの境界カーソルを調整し、8点の境界を確認して次へ進みます。",
-            "light": "光照射野：画像上の辺や頂点をドラッグして境界を合わせ、次へ進みます。",
+            "laser": "レーザー中心：画像の水平・垂直線をドラッグして中心を合わせます。照射野のフレームをクリックして編集対象を切り替えます。",
+            "calibration": "解像度：DPI入力・TIFFタグ・mm/px入力から校正方法を選びます。",
+            "radiation": "照射野：検出ボタンで境界を求め、プロファイルの8点を確認・調整します。条件変更後は再検出してください。",
+            "light": "光照射野：画像上の辺や頂点をドラッグして境界を合わせます。必要な入力が揃うと結果が自動更新されます。",
             "result": "結果：起点と解析値を確認し、保存します。",
         }
         text = tool_help.get(mode, stage_help[self.current_stage])
@@ -2069,7 +2037,7 @@ class MainWindow(QMainWindow):
         dpi = self._effective_dpi()
         length_px = hypot(points[1].x - points[0].x, points[1].y - points[0].y)
         length_mm = length_px * 25.4 / dpi if dpi > 0 else length_px
-        self.tool_result_label.setText(f"定規: {self._format_measurement(length_mm, ' mm')}")
+        self.tool_result_label.setText(f"定規: {self._format_measurement(length_mm, ' mm' if dpi > 0 else ' px')}")
 
     def _redetect_radiation_lines(self) -> None:
         if self.current_stage != "radiation" or self.image is None:
@@ -2183,7 +2151,8 @@ class MainWindow(QMainWindow):
             plot.set_cursors(cursors)
             preview_points.update(self._profile_cursor_points(line_name, cursors))
         self.view.set_profile_cursor_points(preview_points)
-        self._update_radiation_preview(preview_points)
+        if not self._navigating_stage:
+            self._update_radiation_preview(preview_points)
 
     def _profile_cursor_points(self, line_name: str, cursors: dict[str, float]) -> dict[str, Point]:
         line = self.view.profile_lines().get(line_name)
@@ -2244,17 +2213,7 @@ class MainWindow(QMainWindow):
         self.right_profile_plot.set_visible_range(vertical_range)
 
     def _update_result_label(self) -> None:
-        if self.current_stage != "result":
-            self._clear_result_tree()
-            return
-        if self.radiation_rect is None:
-            self._clear_result_tree()
-            return
-        result = self._current_analysis_result()
-        if result is None:
-            self._clear_result_tree()
-            return
-        self._populate_result_tree(result)
+        self._sync_stage_controls()
 
     def _clear_result_tree(self) -> None:
         self.result_tree.clear()
@@ -2308,22 +2267,81 @@ class MainWindow(QMainWindow):
             return self.light_rect.ordered_points()
         return None
 
-    def keyPressEvent(self, event) -> None:
-        if event.key() in (Qt.Key_Tab, Qt.Key_Backtab) and self.main_tabs.currentIndex() == 0:
-            self.move_stage(bool(event.modifiers() & Qt.ShiftModifier) or event.key() == Qt.Key_Backtab)
-            event.accept()
+    def _radiation_input_signature(self) -> tuple:
+        positions = tuple(sorted((self.manual_radiation_profile_lines or {}).items())) if self.radiation_profile_mode == "manual" else ()
+        return (self.image_path, self.laser_center, self.analyse_dpi_mode, self.pixel_length.text() if self.analyse_dpi_mode == "numeric" else "", self._effective_dpi(), self.film_pixel_spin.value(),
+                self.radiation_threshold_spin.value(), self.radiation_center_spin.value(),
+                self.smoothing_window_spin.value(), self.radiation_profile_mode,
+                self.radiation_profile_distance_mm, positions)
+
+    def _radiation_is_current(self) -> bool:
+        return (self._detection_signature is not None
+                and self._detection_signature == self._radiation_input_signature()
+                and self.radiation_rect is not None)
+
+    def detect_radiation_field(self) -> None:
+        if self.image is None:
             return
-        super().keyPressEvent(event)
+        self.go_to_stage("radiation")
+        self._refresh_radiation_profile_lines()
+        self._radiation_profile_positions = self._manual_radiation_profile_positions_from_view()
+        self._redetect_radiation_lines()
+        self.radiation_points = {}
+        self._capture_radiation_points()
+        if len(self.radiation_points) != 8 or not self._build_radiation_from_points():
+            self._detection_signature = None
+            self._sync_stage_controls()
+            self.status.showMessage("境界を検出できません。線の位置や閾値を調整してください。")
+            return
+        self.confirm_radiation_field()
+        self._sync_stage_controls()
+
+    def _result_errors(self) -> list[str]:
+        errors = []
+        if self._calibration_error():
+            errors.append(self._calibration_error())
+        if self.image is None:
+            errors.append("画像を読み込んでください。")
+        if self.laser_center is None:
+            errors.append("レーザー中心を設定してください。")
+        if not self._radiation_is_current():
+            errors.append("照射野を検出してください。条件を変更した場合は再検出が必要です。")
+        if self._current_light_polygon() is None:
+            errors.append("光照射野を設定してください。")
+        return errors
 
     def _sync_stage_controls(self) -> None:
-        self.stage_label.setText(_stage_title(self.current_stage, False))
         self._sync_operation_help(self.tool_mode)
+        radiation_current = self._radiation_is_current()
+        errors = self._result_errors()
+        processed = not errors
+        self.result_validation_label.setText("結果の処理に必要な入力：\n" + "\n".join(errors))
+        self.result_validation_label.setVisible(bool(errors))
+        result = self._current_analysis_result() if processed else None
+        if result is None:
+            self._clear_result_tree()
+        else:
+            self._populate_result_tree(result)
+        states = {
+            "laser": "設定済み" if self.laser_center is not None else "未設定",
+            "calibration": "未設定" if self._calibration_error() else "設定済み",
+            "radiation": "設定済み" if radiation_current else "再解析が必要" if self._detection_signature is not None else "未検出",
+            "light": "設定済み" if self.light_rect is not None else "未設定",
+            "result": "処理済み" if processed else "再解析が必要" if self._detection_signature is not None and not radiation_current else "未処理",
+        }
         for stage, frame in self.stage_frames.items():
             selected = stage == self.current_stage
-            frame.setTitle(_stage_title(stage, stage in self.completed_stages))
-            frame.setStyleSheet(_selected_group_style() if selected else _group_style())
+            frame.setAccessibleDescription(states[stage])
+            state = "complete" if states[stage] in ("設定済み", "処理済み") else "stale" if "再" in states[stage] else "incomplete"
+            frame.setProperty("stepState", state)
+            frame.setProperty("currentStage", selected)
+            style = stage_card_style(state, selected)
+            if frame.styleSheet() != style:
+                frame.setStyleSheet(style)
             for control in self.stage_controls[stage]:
-                control.setEnabled(selected)
+                control.setEnabled(self.image is not None)
+        self.detect_button.setEnabled(self.image is not None)
+        self.save_button.setEnabled(processed)
 
     @contextmanager
     def _suspend_settings_writes(self):
@@ -2398,6 +2416,7 @@ def _plain_frame(layout: QHBoxLayout | QVBoxLayout) -> QFrame:
 def _stage_title(stage: str, completed: bool) -> str:
     labels = {
         "laser": "レーザー中心",
+        "calibration": "解像度",
         "radiation": "照射野",
         "light": "光照射野",
         "result": "結果",
@@ -2407,8 +2426,8 @@ def _stage_title(stage: str, completed: bool) -> str:
     return f"{prefix}{number}  {labels[stage]}"
 
 
-def _stage_names() -> tuple[str, str, str, str]:
-    return ("laser", "radiation", "light", "result")
+def _stage_names() -> tuple[str, ...]:
+    return ("laser", "calibration", "radiation", "light", "result")
 
 
 def _record_display_row(row: dict[str, object]) -> dict[str, object]:
@@ -2429,7 +2448,7 @@ def _record_display_row(row: dict[str, object]) -> dict[str, object]:
         "created_at": row["created_at"],
         "image_path": row["image_path"],
         "origin": origin,
-        "dpi": _round1(dpi) if dpi > 0 else 0.0,
+        "dpi": dpi if dpi > 0 else 0.0,
         "unit": unit,
         "laser_center_x": _round1((laser.x - origin_point.x) * scale),
         "laser_center_y": _round1((laser.y - origin_point.y) * scale),
@@ -2473,14 +2492,6 @@ def _icon_tool_button(filename: str, tooltip: str) -> QToolButton:
     button.setIconSize(QSize(24, 24))
     button.setFixedSize(QSize(32, 32))
     button.setAutoRaise(True)
-    return button
-
-
-def _nav_button(text: str) -> QPushButton:
-    button = _button(text)
-    button.setMinimumWidth(96)
-    button.setMinimumHeight(32)
-    button.setMaximumWidth(150)
     return button
 
 
@@ -2668,6 +2679,7 @@ def _rect_from_ordered_points(top_left: Point, top_right: Point, bottom_right: P
 
 def main() -> int:
     app = QApplication(sys.argv)
+    app.setWindowIcon(QIcon(str(_resource_dir("assets", "firec.png"))))
     window = MainWindow()
     window.show()
     return app.exec()

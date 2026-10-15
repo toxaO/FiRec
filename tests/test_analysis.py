@@ -323,3 +323,13 @@ def test_connect_database_replaces_outdated_schema(tmp_path):
     assert "dpi" in columns
     assert "radiation_edge_length_x_px" in columns
     assert "light_area_px2" in columns
+
+
+def test_uncalibrated_boundary_center_range_uses_pixels():
+    positions = np.arange(11, dtype=np.float64)
+    values = np.array([100, 100, 100, 50, 10, 10, 10, 50, 100, 100, 100], dtype=np.float64)
+    result = detect_profile_boundaries(positions, values, 100, center_range_mm=1, dpi=0, smoothing_window=1)
+    assert result.center_start_position == 4
+    assert result.center_end_position == 6
+    assert result.left_position == 2.9
+    assert result.right_position == 7.1

@@ -1,5 +1,7 @@
 """FiStar-inspired styling for the FiRec desktop interface."""
 
+from pathlib import Path
+
 from PySide6.QtCore import QEvent, QObject, Qt
 from PySide6.QtWidgets import QCheckBox, QLabel, QProxyStyle, QStyle, QStyleOptionButton, QToolTip
 
@@ -69,8 +71,11 @@ QLineEdit:focus, QComboBox:focus, QDoubleSpinBox:focus, QSpinBox:focus { border-
 QLineEdit:disabled, QComboBox:disabled, QDoubleSpinBox:disabled, QSpinBox:disabled {
     background: #eef2f5; color: #7b8e9a; border-color: #dce5eb;
 }
-QComboBox { padding-right: 24px; }
-QComboBox::drop-down { border: 0; width: 22px; }
+QComboBox { padding-right: 28px; }
+QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: top right;
+                      border: 0; border-left: 1px solid #dce5eb; width: 24px; background: #eef4f7;
+                      border-top-right-radius: 4px; border-bottom-right-radius: 4px; }
+QComboBox::down-arrow { image: url("@DOWN_ARROW@"); width: 12px; height: 8px; }
 QSpinBox::up-button, QSpinBox::down-button,
 QDoubleSpinBox::up-button, QDoubleSpinBox::down-button { width: 16px; }
 QPushButton { background: #eef4f7; border: 1px solid #cbd8e0; border-radius: 5px;
@@ -82,6 +87,7 @@ QPushButton[primary="true"]:hover { background: #066c78; }
 QPushButton:disabled { background: #e9eef1; border-color: #dce5eb; color: #85949e; }
 QToolButton { border: 1px solid transparent; border-radius: 4px; padding: 3px; }
 QToolButton:hover, QToolButton:checked { background: #e1eff2; border-color: #a8ced6; }
+QLabel[stageHeading="true"] { font-weight: 600; }
 QToolButton[helpButton="true"], QToolButton[helpButton="true"]:hover,
 QToolButton[helpButton="true"]:pressed { background: transparent; border-color: transparent; }
 QToolButton[imageTool="true"] { background: #ffffff; border: 1px solid #b9cbd5; }
@@ -98,8 +104,9 @@ QCheckBox, QRadioButton { spacing: 5px; }
 QLabel[muted="true"] { color: #516978; font-size: 12px; }
 QLabel:disabled, QCheckBox:disabled, QRadioButton:disabled { color: #85949e; }
 QStatusBar { background: #eaf0f4; color: #647b89; }
+QStatusBar::item { border: 0; }
 QToolTip { background: #253b49; color: #ffffff; border: 0; padding: 5px; }
-"""
+""".replace("@DOWN_ARROW@", (Path(__file__).parent / "assets/icons/chevron_down.svg").as_posix())
 
 GROUP_STYLE = """
 QGroupBox { background: #ffffff; border: 1px solid #dce5eb; border-radius: 7px;
@@ -111,3 +118,15 @@ SELECTED_GROUP_STYLE = GROUP_STYLE + """
 QGroupBox { background: #f2fafb; border-color: #0794a3; }
 QGroupBox::title { color: #087b87; }
 """
+
+
+def stage_card_style(state: str, selected: bool) -> str:
+    background = {"complete": "#edf8f2", "incomplete": "#fff8ed", "stale": "#fff0dc"}[state]
+    border = "#087f8c" if selected else "#dce5eb"
+    return f"""
+    QGroupBox#analysisStep {{ background: {background}; border: 2px solid {border};
+        border-radius: 7px; margin-top: 12px; padding: 8px 6px 6px;
+        font-size: 15px; font-weight: 600; }}
+    QGroupBox#analysisStep::title {{ subcontrol-origin: margin; left: 10px;
+        padding: 0 5px; }}
+    """

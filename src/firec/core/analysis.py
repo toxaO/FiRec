@@ -192,7 +192,7 @@ def detect_profile_boundaries(
 
     smoothed = moving_average_profile(values, smoothing_window)
     center_position = (float(np.min(positions)) + float(np.max(positions))) / 2.0
-    range_px = max(0.0, float(center_range_mm)) * float(dpi) / 25.4
+    range_px = max(0.0, float(center_range_mm)) * (float(dpi) / 25.4 if dpi > 0 else 1.0)
     center_mask = np.abs(positions - center_position) <= range_px
     if np.any(center_mask):
         center_indices = np.flatnonzero(center_mask)

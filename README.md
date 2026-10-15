@@ -2,6 +2,11 @@
 
 TIFF画像から照射野と光照射野を解析し、位置情報とサイズ比較を記録するためのPythonアプリケーションです。
 
+## 操作マニュアル
+
+- [Markdown版](docs/user-manual.md)
+- [PDF版](docs/FiRec-user-manual.pdf)
+
 ## Project Structure
 
 ```text

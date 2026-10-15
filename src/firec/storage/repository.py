@@ -86,7 +86,7 @@ def save_analysis(
             datetime.now().isoformat(timespec="seconds"),
             Path(image_path).name,
             origin,
-            _round1(dpi),
+            float(dpi),
             _round1(result.laser_center.x if result.laser_center is not None else 0.0),
             _round1(result.laser_center.y if result.laser_center is not None else 0.0),
             _round1(result.radiation_field.center.x),
@@ -136,7 +136,7 @@ def update_analysis_record(connection: sqlite3.Connection, analysis_id: int, ori
         SET origin = ?, dpi = ?
         WHERE id = ?
         """,
-        (origin, _round1(dpi), analysis_id),
+        (origin, float(dpi), analysis_id),
     )
     connection.commit()
 

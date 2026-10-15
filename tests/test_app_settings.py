@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -16,6 +17,42 @@ from firec.core.geometry import Point, RotatedRect
 from firec.storage.repository import connect_database
 from firec.storage.repository import fetch_analysis_rows
 from firec.storage.repository import save_analysis
+
+
+def test_dpi_input_is_default_and_persists(qapp, isolated_settings):
+    window = _make_window(qapp)
+    assert window.calibration_method.currentData() == "dpi"
+    window.dpi_input.setText("300")
+    assert window._effective_dpi() == 300
+    assert "300 DPI" in window.calibration_label.text()
+    restored = _make_window(qapp)
+    assert restored.calibration_method.currentData() == "dpi"
+    assert restored._effective_dpi() == 300
+    window._loaded_image_dpi = 254.0
+    window._set_analyse_dpi_mode("tag")
+    assert window.calibration_label.text() == "254 DPI"
+    window._set_analyse_dpi_mode("dpi")
+    assert window._effective_dpi() == 300
+    for value in ("0", "-1", "nan", "inf", "abc"):
+        window.dpi_input.setText(value)
+        assert window._calibration_error()
+        assert window._effective_dpi() == 0
+    window.close()
+    restored.close()
+
+
+def test_python_entry_point_sets_application_icon(qapp, monkeypatch):
+    application = Mock()
+    application.exec.return_value = 0
+    window = Mock()
+    monkeypatch.setattr(app_module, "QApplication", lambda args: application)
+    monkeypatch.setattr(app_module, "MainWindow", lambda: window)
+    assert app_module.main() == 0
+    application.setWindowIcon.assert_called_once()
+    icon = application.setWindowIcon.call_args.args[0]
+    assert not icon.isNull()
+    assert not icon.pixmap(64, 64).isNull()
+    window.show.assert_called_once()
 
 
 @pytest.fixture
@@ -60,8 +97,8 @@ def _find_label(window, text: str) -> QLabel:
 def test_main_window_restores_user_settings(qapp, isolated_settings):
     window = _make_window(qapp)
 
-    window._set_analyse_dpi_mode("manual")
-    window.dpi_spin.setValue(96.0)
+    window._set_analyse_dpi_mode("numeric")
+    window.pixel_length.setText("0.1")
     window.film_pixel_spin.setValue(321.0)
     window.radiation_threshold_spin.setValue(42.0)
     window.radiation_center_spin.setValue(18.0)
@@ -85,8 +122,8 @@ def test_main_window_restores_user_settings(qapp, isolated_settings):
 
     assert restored.main_tabs.tabText(0) == "解析"
     assert restored.main_tabs.tabText(1) == "記録"
-    assert restored.analyse_dpi_mode == "manual"
-    assert restored.analyse_manual_dpi == 96.0
+    assert restored.analyse_dpi_mode == "numeric"
+    assert float(restored.pixel_length.text()) == 0.1
     assert restored.film_pixel_spin.value() == 321.0
     assert restored.radiation_threshold_spin.value() == 42.0
     assert restored.radiation_center_spin.value() == 18.0
@@ -139,7 +176,7 @@ def test_input_fields_have_no_hover_help_after_dpi_mode_changes(qapp, isolated_s
     from PySide6.QtWidgets import QAbstractSpinBox, QComboBox, QLineEdit
 
     window = _make_window(qapp)
-    for mode in ("manual", "image"):
+    for mode in ("none", "numeric", "tag"):
         window._set_analyse_dpi_mode(mode)
         for widget in window.findChildren(QLineEdit) + window.findChildren(QAbstractSpinBox) + window.findChildren(QComboBox):
             assert not widget.toolTip()
@@ -207,33 +244,16 @@ def test_stage_help_click_shows_explanation_without_changing_stage(qapp, isolate
     window.close()
 
 
-def test_manual_dpi_updates_on_focus_loss(qapp, isolated_settings):
+def test_numeric_resolution_updates_on_focus_loss(qapp, isolated_settings):
     window = _make_window(qapp)
     window.show()
-    qapp.processEvents()
-
-    window._set_analyse_dpi_mode("manual")
-    window.dpi_spin.setFocus()
-    qapp.processEvents()
-
-    window.dpi_spin.lineEdit().selectAll()
-    QTest.keyClicks(window.dpi_spin.lineEdit(), "96")
+    window._set_analyse_dpi_mode("numeric")
+    window.pixel_length.setFocus()
+    window.pixel_length.selectAll()
+    QTest.keyClicks(window.pixel_length, "0.1")
     window.path_edit.setFocus()
     qapp.processEvents()
-
-    assert window.analyse_manual_dpi == 96.0
-    assert window.dpi_spin.value() == 96.0
-
-
-def test_manual_dpi_spinbox_steps_apply_immediately(qapp, isolated_settings):
-    window = _make_window(qapp)
-
-    window._set_analyse_dpi_mode("manual")
-    window.dpi_spin.setValue(96.0)
-    window.dpi_spin.stepUp()
-
-    assert window.analyse_manual_dpi == 97.0
-    assert window.dpi_spin.value() == 97.0
+    assert window._effective_dpi() == pytest.approx(254)
 
 
 def test_main_window_starts_with_no_tool_selected(qapp, isolated_settings):
@@ -302,6 +322,25 @@ def test_reset_radiation_field_does_not_overwrite_saved_defaults(qapp, isolated_
 
     assert restored.radiation_profile_mode == "manual"
     assert restored.radiation_threshold_spin.value() == 37.0
+
+
+@pytest.mark.parametrize("dpi", [12700.0, 25.4 / 0.09633])
+def test_record_origin_changes_preserve_calibration(qapp, isolated_settings, dpi):
+    window = _make_window(qapp)
+    rectangle = RotatedRect(Point(10, 10), width=20, height=30, angle=0)
+    result = compare_field_polygons(
+        rectangle.ordered_points(), rectangle.ordered_points(),
+        origin_field="laser", origin_point=Point(0, 0),
+    )
+    save_analysis(window.connection, "calibrated.tif", result, "laser", dpi)
+    assert fetch_analysis_rows(window.connection)[0]["dpi"] == dpi
+    window.refresh_results_table()
+    assert window.results_table.cellWidget(0, 3).value() == pytest.approx(dpi, abs=0.05)
+    origin_widget = window.results_table.cellWidget(0, 2)
+    for origin in ("radiation", "light"):
+        origin_widget.setCurrentIndex(origin_widget.findData(origin))
+        assert fetch_analysis_rows(window.connection)[0]["dpi"] == dpi
+    window.close()
 
 
 def test_record_rows_edit_origin_and_dpi_independently(qapp, isolated_settings):
@@ -572,3 +611,285 @@ def test_radiation_stage_keeps_profile_visibility_toggles(qapp, isolated_setting
     assert window.bottom_profile_plot.raw_profile_visible is False
     assert window.left_profile_plot.smoothed_profile_visible is False
     assert window.bottom_profile_plot.smoothed_profile_visible is False
+
+
+def _loaded_navigation_window(qapp):
+    window = _make_window(qapp)
+    window.load_path(Path(__file__).parents[1] / "sample" / "img.tif")
+    window.radiation_profile_distance_spin.setValue(13.0)
+    window.go_to_stage("radiation")
+    return window
+
+
+def test_step_navigation_preserves_fields_cursors_and_completion(qapp, isolated_settings):
+    window = _loaded_navigation_window(qapp)
+    window.detect_radiation_field()
+    window.light_rect = RotatedRect(Point(360, 350), 210, 220, 0)
+    window.view.set_light_rect(window.light_rect)
+    before = (window.radiation_rect, window.radiation_polygon, window.light_rect,
+              dict(window.radiation_points), dict(window.profile_cursors), set(window.completed_stages))
+    window.go_to_stage("result")
+    window.go_to_stage("laser")
+    window.go_to_stage("radiation")
+    after = (window.radiation_rect, window.radiation_polygon, window.light_rect,
+             dict(window.radiation_points), dict(window.profile_cursors), set(window.completed_stages))
+    assert after == before
+    window.close()
+
+
+def test_frame_click_selects_without_scrolling_or_moving_cards(qapp, isolated_settings):
+    from PySide6.QtCore import QPoint, Qt
+
+    window = _make_window(qapp)
+    window.show()
+    qapp.processEvents()
+    window.analysis_scroll.verticalScrollBar().setValue(40)
+    window.path_edit.setFocus()
+    qapp.processEvents()
+    scroll = window.analysis_scroll.verticalScrollBar().value()
+    geometry = {key: frame.geometry() for key, frame in window.stage_frames.items()}
+    QTest.mouseClick(window.stage_frames["light"], Qt.LeftButton, pos=QPoint(2, 2))
+    assert window.current_stage == "light"
+    assert window.path_edit.hasFocus()
+    qapp.processEvents()
+    assert window.analysis_scroll.verticalScrollBar().value() == scroll
+    assert {key: frame.geometry() for key, frame in window.stage_frames.items()} == geometry
+    window.close()
+
+
+def test_tab_from_image_keeps_stage_and_moves_focus(qapp, isolated_settings):
+    from PySide6.QtCore import Qt
+
+    window = _make_window(qapp)
+    window.show()
+    window.view.setFocus()
+    qapp.processEvents()
+    QTest.keyClick(window.view, Qt.Key_Tab)
+    assert window.current_stage == "laser"
+    assert not window.view.hasFocus()
+    window.close()
+
+
+def test_results_process_automatically_and_upstream_changes_block_save(qapp, isolated_settings):
+    window = _loaded_navigation_window(qapp)
+    window.detect_radiation_field()
+    assert window.current_stage == "radiation"
+    assert window.light_rect is not None
+    assert window.save_button.isEnabled()
+    assert window.stage_frames["result"].property("stepState") == "complete"
+    assert window.result_tree.topLevelItemCount() > 0
+    assert not hasattr(window, "review_button")
+    window.save_button.click()
+    assert len(fetch_analysis_rows(window.connection)) == 1
+    window.origin_combo.setCurrentIndex(window.origin_combo.findData("radiation"))
+    assert window.result_tree.topLevelItem(0).text(1) == "radiation 中心"
+    assert window.save_button.isEnabled()
+    assert window.current_stage == "radiation"
+    original_light = window.light_rect
+    window.radiation_threshold_spin.setValue(60)
+    assert window.light_rect == original_light
+    assert not window.save_button.isEnabled()
+    assert window.result_tree.topLevelItemCount() == 0
+    assert window.stage_frames["result"].property("stepState") == "stale"
+    assert window.stage_frames["radiation"].property("stepState") == "stale"
+    window.go_to_stage("radiation")
+    window.detect_radiation_field()
+    assert window.light_rect == original_light
+    window.go_to_stage("result")
+    assert window.save_button.isEnabled()
+    window.close()
+
+
+@pytest.mark.parametrize("change", ["distance", "mode"])
+def test_radiation_controls_update_stale_status_from_result_stage(qapp, isolated_settings, change):
+    window = _loaded_navigation_window(qapp)
+    window.detect_radiation_field()
+    assert window.save_button.isEnabled()
+    if change == "distance":
+        window.radiation_profile_distance_spin.setValue(14)
+    else:
+        window.radiation_profile_manual_radio.setChecked(True)
+    assert not window.save_button.isEnabled()
+    assert window.stage_frames["radiation"].property("stepState") == "stale"
+    window.close()
+
+
+def test_radiation_mode_edit_does_not_disable_laser_line_editing(qapp, isolated_settings):
+    window = _loaded_navigation_window(qapp)
+    window.go_to_stage("laser")
+    window.radiation_profile_manual_radio.setChecked(True)
+    window.radiation_profile_auto_radio.setChecked(True)
+    assert window.view.profile_lines_editable
+    window.close()
+
+
+def test_result_automatically_reports_all_missing_inputs(qapp, isolated_settings):
+    window = _make_window(qapp)
+    assert not hasattr(window, "review_button")
+    message = window.result_validation_label.text()
+    assert "画像" in message
+    assert "レーザー" in message
+    assert "照射野" in message
+    assert "光照射野" in message
+    assert not window.save_button.isEnabled()
+    window.close()
+
+
+def test_light_field_can_be_adjusted_before_radiation_detection(qapp, isolated_settings):
+    window = _make_window(qapp)
+    window.load_path(Path(__file__).parents[1] / "sample" / "img.tif")
+    window.go_to_stage("light")
+    assert window.light_rect is not None
+    adjusted = RotatedRect(Point(350, 340), 220, 240, 0)
+    window.view.set_light_rect(adjusted)
+    window._on_rect_changed("light", adjusted)
+    window.radiation_profile_distance_spin.setValue(13)
+    window.detect_radiation_field()
+    assert window.light_rect == adjusted
+    assert window.save_button.isEnabled()
+    assert window.stage_frames["light"].property("stepState") == "complete"
+    window.close()
+
+
+def test_resolution_none_tag_numeric_and_invalid(qapp, isolated_settings):
+    w = _make_window(qapp)
+    w._loaded_image_dpi = 254
+    w._set_analyse_dpi_mode("none")
+    assert w._effective_dpi() == 0
+    assert w.radiation_center_spin.suffix() == " px"
+    w._set_analyse_dpi_mode("tag")
+    assert w._effective_dpi() == 254
+    w._loaded_image_dpi = 0
+    assert w._calibration_error()
+    assert w._effective_dpi() == 0
+    w._set_analyse_dpi_mode("numeric")
+    w.pixel_length.setText("0.1")
+    assert w._effective_dpi() == pytest.approx(254)
+    for value in ("", "0", "-1", "nan", "inf", "abc"):
+        w.pixel_length.setText(value)
+        assert w._effective_dpi() == 0
+        assert w._calibration_error()
+    assert "mm/px" in w.result_validation_label.text()
+
+
+def test_resolution_legacy_preferences_convert_dpi(qapp, isolated_settings):
+    isolated_settings.setValue("analyse_dpi_mode", "manual")
+    isolated_settings.setValue("analyse_manual_dpi", 254)
+    w = _make_window(qapp)
+    assert w.analyse_dpi_mode == "numeric"
+    assert float(w.pixel_length.text()) == pytest.approx(0.1)
+    assert w._effective_dpi() == pytest.approx(254)
+
+
+def test_uncalibrated_profile_offsets_use_pixels(qapp, isolated_settings):
+    w = _make_window(qapp)
+    w.image = np.zeros((200, 200))
+    w.laser_center = Point(100, 100)
+    w._set_analyse_dpi_mode("none")
+    w.radiation_profile_distance_mm = 20
+    assert w._auto_radiation_profile_positions() == dict(top=80, bottom=120, left=80, right=120)
+
+
+def test_resolution_change_invalidates_review_and_save(qapp, isolated_settings, monkeypatch):
+    monkeypatch.setattr(app_module.QMessageBox, "warning", lambda *args: None)
+    w = _loaded_navigation_window(qapp)
+    w.detect_radiation_field()
+    assert w.save_button.isEnabled()
+    w._set_analyse_dpi_mode("numeric")
+    w.pixel_length.setText("0.1")
+    assert not w.save_button.isEnabled()
+    w.detect_radiation_field()
+    assert w.save_button.isEnabled()
+    w.pixel_length.setText("nan")
+    assert not w.save_button.isEnabled()
+    w.save_current_result()
+    assert fetch_analysis_rows(w.connection) == []
+
+
+def test_ruler_uses_pixel_units_without_resolution(qapp, isolated_settings):
+    w = _make_window(qapp)
+    w.image = np.zeros((20, 20))
+    w.tool_mode = "ruler"
+    w._set_analyse_dpi_mode("none")
+    w._on_ruler_changed((Point(0, 0), Point(3, 4)))
+    assert "5.0 px" in w.tool_result_label.text()
+    w._set_analyse_dpi_mode("numeric")
+    w.pixel_length.setText("0.1")
+    assert "0.5 mm" in w.tool_result_label.text()
+
+
+def test_legacy_image_mode_maps_to_tag(qapp, isolated_settings):
+    isolated_settings.setValue("analyse_dpi_mode", "image")
+    w = _make_window(qapp)
+    assert w.calibration_method.currentData() == "tag"
+    assert w._effective_dpi() == 0
+
+
+def test_resolution_card_follows_laser(qapp, isolated_settings):
+    w = _make_window(qapp)
+    layout = w.stage_frames["laser"].parentWidget().layout()
+    assert layout.indexOf(w.calibration_method.parentWidget()) == layout.indexOf(w.stage_frames["laser"]) + 1
+
+
+def test_square_image_and_profiles_resize_without_changing_analysis(qapp, isolated_settings):
+    w = _loaded_navigation_window(qapp)
+    w.detect_radiation_field()
+    radiation, light, dpi = w.radiation_rect, w.light_rect, w._effective_dpi()
+    w.view.scale(1.5, 1.5)
+    scale = w.view.transform().m11()
+    w.show()
+    for width, height in ((1000, 740), (1300, 700), (900, 1000)):
+        w.resize(width, height)
+        qapp.processEvents()
+        assert w.view.width() == w.view.height()
+        assert w.square_image.rect().contains(w.view.geometry())
+        for profile in w.profile_plots.values():
+            assert w.square_image.rect().contains(profile.geometry())
+        assert w.top_profile_plot.width() == w.view.width()
+        assert w.left_profile_plot.height() == w.view.height()
+        assert w.radiation_rect == radiation and w.light_rect == light
+        assert w._effective_dpi() == dpi
+        assert w.view.transform().m11() == scale
+    w.analysis_splitter.setSizes([450, 450])
+    qapp.processEvents()
+    assert w.view.width() == w.view.height()
+    assert w.square_image.rect().contains(w.view.geometry())
+    w.close()
+
+
+def test_resolution_stage_preserves_analysis_and_image_info(qapp, isolated_settings):
+    w = _loaded_navigation_window(qapp)
+    w.detect_radiation_field()
+    radiation = w.radiation_rect
+    light = w.light_rect
+    dpi = w._effective_dpi()
+    w.show()
+    qapp.processEvents()
+    geometry = {key: frame.geometry() for key, frame in w.stage_frames.items()}
+    w.go_to_stage("calibration")
+    qapp.processEvents()
+    assert w.current_stage == "calibration"
+    assert w.radiation_rect == radiation
+    assert w.light_rect == light
+    assert w._effective_dpi() == dpi
+    assert {key: frame.geometry() for key, frame in w.stage_frames.items()} == geometry
+    w.status.showMessage("検出完了")
+    qapp.processEvents()
+    assert w.image_info_label.isVisible()
+    assert w.image_info_label.parentWidget() is w.status
+    w.close()
+
+
+def test_numeric_resolution_survives_image_loading(qapp, isolated_settings, monkeypatch):
+    monkeypatch.setattr(app_module, "load_image", lambda path: np.zeros((30, 30)))
+    monkeypatch.setattr(app_module, "tiff_image_dpi", lambda path: None)
+    w = _make_window(qapp)
+    w._set_analyse_dpi_mode("numeric")
+    w.pixel_length.setText("0.1")
+    w.load_path(Path("first.tif"))
+    w.load_path(Path("second.tif"))
+    assert w.pixel_length.text() == "0.1"
+    assert w._effective_dpi() == pytest.approx(254)
+    w._set_analyse_dpi_mode("tag")
+    assert "解像度タグ" in w.result_validation_label.text()
+    assert "照射野" in w.result_validation_label.text()
