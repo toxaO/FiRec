@@ -7,6 +7,8 @@ TIFF画像から照射野と光照射野を解析し、位置情報とサイズ�
 - [Markdown版](docs/user-manual.md)
 - [PDF版](docs/FiRec-user-manual.pdf)
 
+最新版はMarkdown版です。FiRecフォルダをVS Codeで開き、Markdown PDF拡張で `docs/user-manual.md` を出力できます。用紙・余白・`docs/manual.css` の指定は `.vscode/settings.json` に設定しています。既存PDFは今回の編集では更新していません。
+
 ## Project Structure
 
 ```text

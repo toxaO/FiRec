@@ -1,0 +1,9 @@
+{
+  "markdown-pdf.styles": ["manual.css"],
+  "markdown-pdf.stylesRelativePathFile": true,
+  "markdown-pdf.format": "A4",
+  "markdown-pdf.margin.top": "18mm",
+  "markdown-pdf.margin.bottom": "18mm",
+  "markdown-pdf.margin.left": "16mm",
+  "markdown-pdf.margin.right": "16mm"
+}

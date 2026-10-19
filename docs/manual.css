@@ -1,0 +1,149 @@
+body {
+  font-family: "Hiragino Sans", "Yu Gothic", sans-serif;
+  font-size: 10.5pt;
+  line-height: 1.75;
+  color: #263238;
+  overflow-wrap: anywhere;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  color: #175b66;
+  break-after: avoid;
+}
+
+h1 {
+  font-size: 25pt;
+  border-bottom: 3px solid #175b66;
+  padding-bottom: 12px;
+}
+
+h2 {
+  font-size: 18pt;
+  border-bottom: 2px solid #175b66;
+  padding-bottom: 6px;
+}
+
+h3 {
+  font-size: 13pt;
+  border-left: 4px solid #279a9b;
+  padding-left: 10px;
+}
+
+h4 {
+  font-size: 11pt;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 9pt;
+}
+
+th {
+  background: #e5f1f2;
+  font-weight: bold;
+}
+
+th,
+td {
+  border: 1px solid #cbd8db;
+  padding: 7px 9px;
+}
+
+tr {
+  break-inside: avoid;
+}
+
+img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 16px auto;
+  border: 1px solid #d5dfe1;
+}
+
+/* 注釈はSVGに含め、元の画面キャプチャは変更しない。 */
+img[src$="-annotated.svg"] {
+  width: 100%;
+  max-height: 138mm;
+  object-fit: contain;
+  border: 0;
+}
+
+/* 印刷時は、画像と説明が同じページに収まるよう高さも制限する。 */
+img[src$="analyse.png"] {
+  width: 165mm;
+  max-height: 110mm;
+  object-fit: contain;
+}
+
+img[src$="settings.png"] {
+  width: 140mm;
+  max-height: 75mm;
+  object-fit: contain;
+}
+
+img[src$="detail.png"] {
+  width: 165mm;
+  max-height: 70mm;
+  object-fit: contain;
+}
+
+img[src$="records.png"] {
+  width: 165mm;
+  max-height: 80mm;
+  object-fit: contain;
+}
+
+@media print {
+  p {
+    margin-top: 0;
+    margin-bottom: 8px;
+    orphans: 3;
+    widows: 3;
+  }
+
+  h2, h3, h4 {
+    margin-top: 16px;
+    margin-bottom: 8px;
+    page-break-after: avoid;
+  }
+
+  p:has(> img) {
+    break-inside: avoid;
+    page-break-inside: avoid;
+    break-after: avoid;
+    page-break-after: avoid;
+  }
+
+  img {
+    margin: 10px auto;
+    box-sizing: border-box;
+    break-inside: avoid;
+  }
+
+  th, td {
+    padding: 5px 7px;
+  }
+
+  thead {
+    display: table-header-group;
+  }
+
+  tr {
+    page-break-inside: avoid;
+  }
+
+  .page {
+    display: block;
+    height: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    break-after: page;
+    page-break-after: always;
+  }
+}
