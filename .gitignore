@@ -46,3 +46,6 @@ Thumbs.db
 .env
 .env.*
 .envrc
+
+# sample images
+sample/film3x3cm
