@@ -2815,7 +2815,8 @@ def _rect_from_ordered_points(top_left: Point, top_right: Point, bottom_right: P
 
 def main() -> int:
     app = QApplication(sys.argv)
-    app.setWindowIcon(QIcon(str(_resource_dir("assets", "firec.png"))))
+    icon_name = "firec.ico" if sys.platform == "win32" else "firec.png"
+    app.setWindowIcon(QIcon(str(_resource_dir("assets", icon_name))))
     window = MainWindow()
     window.show()
     return app.exec()
