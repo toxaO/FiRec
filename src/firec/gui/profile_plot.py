@@ -3,9 +3,11 @@ from __future__ import annotations
 from collections.abc import Callable
 
 import numpy as np
-from PySide6.QtCore import QPointF, QSize
+from PySide6.QtCore import QPointF, QRectF, QSize
 from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QWidget
+
+from firec.gui.image_view import PROFILE_LINE_COLOR
 
 
 class ProfilePlot(QWidget):
@@ -18,6 +20,11 @@ class ProfilePlot(QWidget):
         self.smoothed_values: np.ndarray | None = None
         self.positions: np.ndarray | None = None
         self.edge_positions: tuple[float, ...] = ()
+        self.cross_profile_positions: tuple[float, ...] = ()
+        self.cross_profiles_visible = True
+        self.average_range_visible = True
+        self.threshold_visible = True
+        self.boundary_cursors_visible = True
         self.reference_value: float | None = None
         self.visible_range: tuple[float, float] | None = None
         self.raw_profile_visible = True
@@ -43,10 +50,33 @@ class ProfilePlot(QWidget):
         if values is None:
             self.positions = None
             self.edge_positions = ()
+            self.cross_profile_positions = ()
             self.smoothed_values = None
             self.reference_value = None
         else:
             self.positions = np.linspace(0.0, float(values.size - 1), values.size)
+        self.update()
+
+    def set_cross_profile_positions(self, positions: tuple[float, ...]) -> None:
+        self.cross_profile_positions = positions
+        self.update()
+
+    def set_cross_profiles_visible(self, visible: bool) -> None:
+        self.cross_profiles_visible = visible
+        self.update()
+
+    def set_average_range_visible(self, visible: bool) -> None:
+        self.average_range_visible = visible
+        self.update()
+
+    def set_threshold_visible(self, visible: bool) -> None:
+        self.threshold_visible = visible
+        self.update()
+
+    def set_boundary_cursors_visible(self, visible: bool) -> None:
+        self.boundary_cursors_visible = visible
+        if not visible:
+            self.active_cursor = None
         self.update()
 
     def set_profile(
@@ -62,6 +92,8 @@ class ProfilePlot(QWidget):
         self.edge_positions = edge_positions
         self.smoothed_values = smoothed_values
         self.reference_value = reference_value
+        if values is None:
+            self.cross_profile_positions = ()
         self.update()
 
     def set_raw_profile_visible(self, visible: bool) -> None:
@@ -114,8 +146,21 @@ class ProfilePlot(QWidget):
         width = max(1, self.width() - 1)
         height = max(1, self.height() - 1)
 
+        if self.average_range_visible and len(self.edge_positions) == 2:
+            start, end = sorted(self.edge_positions)
+            start = max(start, visible_min)
+            end = min(end, visible_max)
+            if end >= start:
+                start_ratio = (start - visible_min) / (visible_max - visible_min)
+                end_ratio = (end - visible_min) / (visible_max - visible_min)
+                if self.orientation == "vertical":
+                    band = QRectF(0, start_ratio * height, width, (end_ratio - start_ratio) * height)
+                else:
+                    band = QRectF(start_ratio * width, 0, (end_ratio - start_ratio) * width, height)
+                painter.fillRect(band, QColor(120, 220, 120, 40))
+
         reference_value = self.reference_value
-        if reference_value is not None:
+        if self.threshold_visible and reference_value is not None:
             reference_ratio = 0.5 if span <= 0 else (float(reference_value) - minimum) / span
             reference_ratio = max(0.0, min(1.0, reference_ratio))
             painter.setPen(QPen(QColor(255, 170, 0), 1))
@@ -146,8 +191,8 @@ class ProfilePlot(QWidget):
             painter.drawLine(0, 0, width, 0)
             painter.drawLine(0, height, width, height)
 
-        painter.setPen(QPen(QColor(120, 220, 120), 1))
-        for edge_position in self.edge_positions:
+        painter.setPen(QPen(PROFILE_LINE_COLOR, 1))
+        for edge_position in self.cross_profile_positions if self.cross_profiles_visible else ():
             if edge_position < visible_min or edge_position > visible_max:
                 continue
             position = (edge_position - visible_min) / (visible_max - visible_min)
@@ -158,7 +203,7 @@ class ProfilePlot(QWidget):
                 x = round(position * width)
                 painter.drawLine(x, 0, x, height)
 
-        for name, cursor_position in self.cursors.items():
+        for name, cursor_position in self.cursors.items() if self.boundary_cursors_visible else ():
             if cursor_position < visible_min or cursor_position > visible_max:
                 continue
             ratio = (cursor_position - visible_min) / (visible_max - visible_min)
@@ -242,7 +287,7 @@ class ProfilePlot(QWidget):
         event.accept()
 
     def _hit_cursor(self, position: QPointF) -> str | None:
-        if not self.cursors:
+        if not self.boundary_cursors_visible or not self.cursors:
             return None
         visible_min, visible_max = self._data_range()
         span = visible_max - visible_min

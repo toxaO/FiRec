@@ -92,6 +92,10 @@ SETTING_DEFAULTS = {
 }
 
 DISPLAY_OPTION_KEYS = {
+    "取得位置": "display_profile_cross_positions",
+    "照射野画素値平均範囲": "display_profile_average_range",
+    "閾値線": "display_profile_threshold",
+    "境界カーソル": "display_profile_boundary_cursors",
     "レーザー中心": "display_laser_center",
     "照射野境界": "display_radiation_edge",
     "照射野中心": "display_radiation_center",
@@ -971,9 +975,20 @@ class MainWindow(QMainWindow):
         display_layout = QVBoxLayout()
         display_layout.setContentsMargins(4, 4, 4, 4)
         display_layout.setSpacing(6)
+        profile_widget = self._display_check_grid(tuple(
+            (label, lambda visible, setter=setter: self._set_profile_overlay_visible(setter, visible))
+            for label, setter in (
+                ("取得位置", "set_cross_profiles_visible"),
+                ("照射野画素値平均範囲", "set_average_range_visible"),
+                ("閾値線", "set_threshold_visible"),
+                ("境界カーソル", "set_boundary_cursors_visible"),
+            )
+        ), {label: f"プロファイル上の{label}を表示・非表示にします。解析結果の数値は変わりません。"
+            for label in ("取得位置", "照射野画素値平均範囲", "閾値線", "境界カーソル")})
         for title, content in (
             ("点と線", common_style_widget),
             ("レーザー", laser_widget),
+            ("プロファイル", profile_widget),
             ("照射野", radiation_widget),
             ("光照射野", light_widget),
         ):
@@ -1038,6 +1053,10 @@ class MainWindow(QMainWindow):
             layout.addWidget(check, index // 2, index % 2)
         widget.setLayout(layout)
         return widget
+
+    def _set_profile_overlay_visible(self, setter: str, visible: bool) -> None:
+        for plot in self.profile_plots.values():
+            getattr(plot, setter)(visible)
 
     def _display_style_spinbox(self, minimum: int, maximum: int, value: int, suffix: str = " px") -> QSpinBox:
         spin = QSpinBox()
@@ -1692,6 +1711,12 @@ class MainWindow(QMainWindow):
         for name, line in lines.items():
             if name not in active_lines:
                 continue
+            perpendicular_names = ("left", "right") if name in ("top", "bottom") else ("top", "bottom")
+            cross_positions = tuple(
+                lines[other][0].x if name in ("top", "bottom") else lines[other][0].y
+                for other in perpendicular_names if other in lines and other in active_lines
+            )
+            self.profile_plots[name].set_cross_profile_positions(cross_positions)
             raw_values = line_profile(self.image, line[0], line[1])
             values = invert_profile(raw_values)
             if name in ("top", "bottom"):

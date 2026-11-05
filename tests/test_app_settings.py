@@ -607,6 +607,33 @@ def test_display_options_toggle_reveals_all_groups_and_preserves_choices(qapp, i
     window.close()
 
 
+def test_profile_overlay_options_persist(qapp, isolated_settings):
+    window = _make_window(qapp)
+    labels = ("取得位置", "照射野画素値平均範囲", "閾値線", "境界カーソル")
+    for label in labels:
+        window.display_option_checks[label].setChecked(False)
+    restored = _make_window(qapp)
+    for label in labels:
+        assert not restored.display_option_checks[label].isChecked()
+    for plot in restored.profile_plots.values():
+        assert not plot.cross_profiles_visible
+        assert not plot.average_range_visible
+        assert not plot.threshold_visible
+        assert not plot.boundary_cursors_visible
+    window.close()
+    restored.close()
+
+
+def test_profiles_follow_perpendicular_line_positions(qapp, isolated_settings):
+    window = _loaded_navigation_window(qapp)
+    window.view.set_profile_line_positions(top_y=230, bottom_y=450, left_x=250, right_x=470)
+    for name in ("top", "bottom"):
+        assert window.profile_plots[name].cross_profile_positions == (250, 470)
+    for name in ("left", "right"):
+        assert window.profile_plots[name].cross_profile_positions == (230, 450)
+    window.close()
+
+
 def test_open_button_loads_image_from_entered_path(qapp, isolated_settings, tmp_path):
     import tifffile
 
