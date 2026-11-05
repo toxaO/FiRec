@@ -6,10 +6,11 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import QEvent, QSettings, QSize, Qt
-from PySide6.QtGui import QIcon, QKeySequence, QShortcut
+from PySide6.QtGui import QIcon, QKeySequence, QShortcut, QWheelEvent
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
+    QAbstractSpinBox,
     QButtonGroup,
     QCheckBox,
     QComboBox,
@@ -292,6 +293,20 @@ class MainWindow(QMainWindow):
         QApplication.instance().installEventFilter(self)
 
     def eventFilter(self, watched, event) -> bool:
+        if (
+            event.type() == QEvent.Wheel
+            and isinstance(watched, (QAbstractSpinBox, QComboBox, QLineEdit))
+            and self.analysis_scroll.isAncestorOf(watched)
+        ):
+            viewport = self.analysis_scroll.viewport()
+            scroll_event = QWheelEvent(
+                viewport.mapFromGlobal(event.globalPosition()), event.globalPosition(),
+                event.pixelDelta(), event.angleDelta(), event.buttons(), event.modifiers(),
+                event.phase(), event.inverted(), event.source(), event.pointingDevice(),
+            )
+            QApplication.sendEvent(viewport, scroll_event)
+            event.accept()
+            return True
         if event.type() in (QEvent.KeyPress, QEvent.KeyRelease) and isinstance(watched, QWidget) and watched.window() is self and self.isVisible():
             modifiers = event.modifiers()
             modifier_keys = {Qt.Key_Shift: Qt.ShiftModifier,

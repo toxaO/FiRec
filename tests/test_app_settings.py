@@ -784,6 +784,32 @@ def test_scroll_zooms_at_cursor(qapp, smooth):
     view.close()
 
 
+def test_wheel_over_analysis_input_scrolls_panel_without_changing_settings(qapp, isolated_settings):
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QWheelEvent
+
+    window = _loaded_navigation_window(qapp)
+    window.show()
+    qapp.processEvents()
+    scrollbar = window.analysis_scroll.verticalScrollBar()
+    for control, current_value in (
+        (window.radiation_threshold_spin, window.radiation_threshold_spin.value),
+        (window.calibration_method, window.calibration_method.currentIndex),
+    ):
+        control.setFocus()
+        scrollbar.setValue(0)
+        before = current_value()
+        position = control.rect().center()
+        event = QWheelEvent(
+            QPointF(position), QPointF(control.mapToGlobal(position)),
+            QPoint(), QPoint(0, -120), Qt.NoButton, Qt.NoModifier, Qt.ScrollUpdate, False,
+        )
+        qapp.sendEvent(control, event)
+        assert current_value() == before
+        assert scrollbar.value() > 0
+    window.close()
+
+
 def test_navigation_modifiers_temporarily_select_buttons_and_preserve_roi(qapp, isolated_settings):
     import sys
     from PySide6.QtCore import QEvent, Qt
