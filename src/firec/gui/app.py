@@ -5,7 +5,7 @@ from math import atan2, degrees, hypot, isfinite
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QSettings, QSize, Qt
+from PySide6.QtCore import QEvent, QSettings, QSize, Qt
 from PySide6.QtGui import QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -58,7 +58,7 @@ from firec.core.analysis import (
     tiff_image_dpi,
 )
 from firec.core.geometry import Point, RotatedRect
-from firec.gui.image_view import ImageView
+from firec.gui.image_view import ImageView, NAVIGATION_CONTROL_MODIFIER
 from firec.gui.profile_plot import ProfilePlot
 from firec.gui.square_image import SquareImagePanel
 from firec.gui.stage_help import stage_help_tooltip
@@ -288,6 +288,26 @@ class MainWindow(QMainWindow):
         self._update_profile_visibility()
         self._sync_stage_controls()
         self.refresh_results_table()
+        self.view.on_navigation_mode_changed = self._sync_navigation_tool_display
+        QApplication.instance().installEventFilter(self)
+
+    def eventFilter(self, watched, event) -> bool:
+        if event.type() in (QEvent.KeyPress, QEvent.KeyRelease) and isinstance(watched, QWidget) and watched.window() is self and self.isVisible():
+            modifiers = event.modifiers()
+            modifier_keys = {Qt.Key_Shift: Qt.ShiftModifier,
+                             Qt.Key_Meta if sys.platform == "darwin" else Qt.Key_Control: NAVIGATION_CONTROL_MODIFIER}
+            modifier = modifier_keys.get(event.key())
+            if modifier is not None:
+                modifiers = modifiers | modifier if event.type() == QEvent.KeyPress else modifiers & ~modifier
+                self.view.set_navigation_modifiers(modifiers)
+        elif event.type() == QEvent.ApplicationDeactivate or (watched is self and event.type() == QEvent.WindowDeactivate):
+            self.view.cancel_navigation()
+        return super().eventFilter(watched, event)
+
+    def _sync_navigation_tool_display(self) -> None:
+        mode = self.view.effective_tool_mode()
+        self._sync_tool_buttons(mode)
+        self._sync_operation_help(mode)
 
     def _build_layout(self) -> None:
         self.main_tabs.addTab(self._analyse_tab(), "解析")
@@ -543,8 +563,8 @@ class MainWindow(QMainWindow):
         return layout
 
     def _tool_frame(self) -> QWidget:
-        self.pan_tool_button = _icon_tool_button("tools_hand.png", "移動：画像をドラッグして表示位置を調整します。\n再クリックで解析操作へ戻ります。")
-        self.zoom_tool_button = _icon_tool_button("tools_loupe.png", "ズーム：画像上を上下にドラッグして倍率を調整します。\n再クリックで解析操作へ戻ります。")
+        self.pan_tool_button = _icon_tool_button("tools_hand.png", "移動：画像をドラッグして表示位置を調整します。\nショートカット：Shift＋ドラッグで一時的に移動。\nキーを離すと元のツールに戻ります。\nボタンの再クリックで解析操作へ戻ります。")
+        self.zoom_tool_button = _icon_tool_button("tools_loupe.png", "ズーム：画像中心方向へドラッグで拡大、外側へドラッグで縮小します。\nショートカット：Ctrl＋ドラッグでも同じ操作ができます。\nキーを離すと元のツールに戻ります。\nボタンの再クリックで解析操作へ戻ります。")
         self.circle_tool_button = _icon_tool_button("tools_circle.png", "円：中心からドラッグして円を描き、\n円内の平均画素値を測定します。")
         self.rect_tool_button = _icon_tool_button("tools_rect.png", "矩形：対角の角へドラッグして範囲を指定し、\n平均画素値を測定します。")
         self.ruler_tool_button = _icon_tool_button("tools_ruler.png", "定規：画像上の2点をクリックして距離を測定します。\n端点はドラッグで調整できます。")
@@ -588,6 +608,8 @@ class MainWindow(QMainWindow):
             self.rect_tool_button,
             self.ruler_tool_button,
         ):
+            if button is self.circle_tool_button:
+                tool_row.addSpacing(12)
             tool_row.addWidget(button)
         tool_row.addWidget(QLabel("ROI画素値平均"))
         self.tool_result_label.setMinimumWidth(120)
@@ -602,8 +624,15 @@ class MainWindow(QMainWindow):
         self.operation_help = QLabel()
         self.operation_help.setWordWrap(True)
         self.operation_help.setProperty("muted", True)
-        self.operation_help.setMinimumHeight(self.operation_help.fontMetrics().lineSpacing() * 2)
-        layout.addWidget(self.operation_help)
+        self.operation_help.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.operation_help_scroll = QScrollArea()
+        self.operation_help_scroll.setWidget(self.operation_help)
+        self.operation_help_scroll.setWidgetResizable(True)
+        self.operation_help_scroll.setFrameShape(QFrame.NoFrame)
+        self.operation_help_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.operation_help_scroll.setFocusPolicy(Qt.NoFocus)
+        self.operation_help_scroll.setFixedHeight(self.operation_help.fontMetrics().lineSpacing() * 4 + 8)
+        layout.addWidget(self.operation_help_scroll)
 
         frame = _frame("画像ツール")
         frame.setLayout(layout)
@@ -1044,6 +1073,7 @@ class MainWindow(QMainWindow):
         self.display_dialog.activateWindow()
 
     def closeEvent(self, event) -> None:
+        QApplication.instance().removeEventFilter(self)
         self.display_dialog.close()
         super().closeEvent(event)
 
@@ -2002,18 +2032,19 @@ class MainWindow(QMainWindow):
     def _set_tool_mode(self, mode: str | None) -> None:
         self._sync_operation_help(mode)
         if mode == self.tool_mode:
-            self._sync_tool_buttons(mode)
             self.view.set_tool_mode(mode)
+            self._sync_navigation_tool_display()
             return
         self._clear_measurement_tool_state()
         self.tool_mode = mode
         self._sync_tool_buttons(mode)
         self.view.set_tool_mode(mode)
+        self._sync_navigation_tool_display()
 
     def _sync_operation_help(self, mode: str | None) -> None:
         tool_help = {
             "pan": "移動：画像をドラッグして表示位置を調整します。\n再クリックで解析操作へ戻ります。",
-            "zoom": "ズーム：画像上を上下にドラッグして倍率を調整します。\n再クリックで解析操作へ戻ります。",
+            "zoom": "ズーム：画像中心方向へドラッグで拡大、外側へドラッグで縮小します。\n再クリックで解析操作へ戻ります。",
             "circle": "円：中心からドラッグして円内の平均画素値を測定します。中心・円周の点で位置と大きさを調整できます。",
             "rect": "矩形：対角の角へドラッグして範囲を指定し、\n平均画素値を測定します。",
             "ruler": "定規：画像上の2点をクリックして距離を測定します。\n端点はドラッグで調整できます。",
@@ -2026,7 +2057,7 @@ class MainWindow(QMainWindow):
             "result": "結果：起点と解析値を確認し、保存します。",
         }
         text = tool_help.get(mode, stage_help[self.current_stage])
-        self.operation_help.setText(text + "\n画像のダブルクリックで表示位置と倍率をリセットできます。")
+        self.operation_help.setText(text + "\nショートカット：Shift＋ドラッグ＝移動 ／ Ctrl＋ドラッグ＝拡大・縮小（画像中心へ拡大、外側へ縮小）。\n画像のダブルクリックで表示位置と倍率をリセットできます。")
 
     def _set_baseline_from_roi(self) -> None:
         if self.image is None:

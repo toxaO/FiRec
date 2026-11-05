@@ -684,6 +684,141 @@ def test_operation_help_tracks_tool_and_returns_to_current_stage(qapp, isolated_
     window.close()
 
 
+def test_operation_help_changes_do_not_resize_image(qapp, isolated_settings):
+    window = _loaded_navigation_window(qapp)
+    window.show()
+    qapp.processEvents()
+    original_size = window.view.viewport().size()
+    original_scale = window.view.transform().m11()
+    for mode in ("pan", "zoom", "circle", "rect", "ruler", None):
+        window._set_tool_mode(mode)
+        qapp.processEvents()
+        assert window.view.viewport().size() == original_size
+        assert window.view.transform().m11() == original_scale
+    window.close()
+
+
+@pytest.mark.parametrize("source", ["button", "ctrl_left", "ctrl_right"])
+def test_radial_zoom_from_tool_and_mac_control_click(qapp, source):
+    import sys
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    if source == "ctrl_right" and sys.platform != "darwin":
+        pytest.skip("macOS control-click conversion")
+    view = ImageView()
+    view.resize(500, 500)
+    view.show()
+    qapp.processEvents()
+    view.set_image(np.zeros((1000, 1000), dtype=np.uint16))
+    if source == "button":
+        view.set_tool_mode("zoom")
+    modifier = Qt.NoModifier if source == "button" else Qt.MetaModifier if sys.platform == "darwin" else Qt.ControlModifier
+    button = Qt.RightButton if source == "ctrl_right" else Qt.LeftButton
+
+    def drag(start, end):
+        for kind, position, changed, held in (
+            (QEvent.MouseButtonPress, start, button, button),
+            (QEvent.MouseMove, end, Qt.NoButton, button),
+            (QEvent.MouseButtonRelease, end, button, Qt.NoButton),
+        ):
+            qapp.sendEvent(view.viewport(), QMouseEvent(kind, QPointF(*position), QPointF(*position), changed, held, modifier))
+
+    # Horizontal movement must zoom, including at the initial fitted scale.
+    before = view.transform().m11()
+    drag((400, 250), (350, 250))
+    assert view.transform().m11() > before
+    before = view.transform().m11()
+    drag((350, 250), (400, 250))
+    assert view.transform().m11() < before
+    view.close()
+
+
+def test_navigation_modifiers_temporarily_select_buttons_and_preserve_roi(qapp, isolated_settings):
+    import sys
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QKeyEvent
+
+    window = _make_window(qapp)
+    window.image = np.zeros((100, 100), dtype=np.uint16)
+    window.view.set_image(window.image)
+    window.show()
+    qapp.processEvents()
+    window.circle_tool_button.click()
+    roi = (Point(40, 40), 10)
+    window.view.set_circle_roi(roi)
+    # Modifier feedback also works while an input field has focus.
+    window.path_edit.setFocus()
+    QTest.keyPress(window.path_edit, Qt.Key_Shift)
+    assert window.pan_tool_button.isChecked()
+    assert window.view.viewport().cursor().shape() == Qt.OpenHandCursor
+    assert window.tool_mode == "circle"
+    control_key = Qt.Key_Meta if sys.platform == "darwin" else Qt.Key_Control
+    modifier = Qt.MetaModifier if sys.platform == "darwin" else Qt.ControlModifier
+    qapp.sendEvent(window.path_edit, QKeyEvent(QEvent.KeyPress, control_key, modifier | Qt.ShiftModifier))
+    assert window.zoom_tool_button.isChecked()
+    assert window.view.viewport().cursor().shape() == Qt.BitmapCursor
+    assert not window.view.viewport().cursor().pixmap().isNull()
+    qapp.sendEvent(window.path_edit, QKeyEvent(QEvent.KeyRelease, control_key, Qt.ShiftModifier))
+    assert window.pan_tool_button.isChecked()
+    QTest.keyRelease(window.path_edit, Qt.Key_Shift)
+    assert window.circle_tool_button.isChecked()
+    assert window.view.viewport().cursor().shape() == Qt.CrossCursor
+    assert window.circle_roi == roi
+    QTest.keyPress(window.path_edit, Qt.Key_Shift)
+    qapp.sendEvent(window, QEvent(QEvent.WindowDeactivate))
+    assert window.circle_tool_button.isChecked()
+    assert window.view.effective_tool_mode() == "circle"
+    window.close()
+
+
+def test_modifier_drags_pan_and_zoom_without_moving_profile_lines(qapp):
+    import sys
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    view = ImageView()
+    view.resize(500, 500)
+    view.set_image(np.zeros((1000, 1000), dtype=np.uint16))
+    view.show()
+    qapp.processEvents()
+    view.scale(3, 3)
+    view.centerOn(500, 500)
+    lines = view.profile_lines()
+
+    def drag(start, end, modifier):
+        for kind, position, button, buttons in (
+            (QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton),
+            (QEvent.MouseMove, end, Qt.NoButton, Qt.LeftButton),
+            (QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton),
+        ):
+            qapp.sendEvent(view.viewport(), QMouseEvent(kind, QPointF(*position), QPointF(*position), button, buttons, modifier))
+
+    before = view.visible_scene_rect().center()
+    drag((250, 250), (290, 270), Qt.ShiftModifier)
+    assert view.visible_scene_rect().center() != before
+    assert view.profile_lines() == lines
+    view.centerOn(500, 500)
+    modifier = Qt.MetaModifier if sys.platform == "darwin" else Qt.ControlModifier
+    for outer, inner in (((400, 250), (350, 250)), ((100, 250), (150, 250)),
+                         ((250, 100), (250, 150)), ((250, 400), (250, 350))):
+        original_scale = view.transform().m11()
+        drag(outer, inner, modifier)
+        assert view.transform().m11() > original_scale
+        before = view.transform().m11()
+        drag(inner, outer, modifier)
+        assert view.transform().m11() < before
+    assert view.profile_lines() == lines
+    # The next unmodified drag edits the original line normally.
+    view.set_active_field("laser")
+    view.set_profile_lines_editable(True)
+    view.set_profile_line_positions(left_x=500, right_x=600, top_y=500, bottom_y=600)
+    point = view.mapFromScene(500, 450)
+    drag((point.x(), point.y()), (point.x() + 20, point.y()), Qt.NoModifier)
+    assert view.profile_lines()["left"][0].x > 500
+    view.close()
+
+
 @pytest.mark.parametrize("shape", ["circle", "rect"])
 def test_baseline_roi_inserts_measurement_only_on_click(qapp, isolated_settings, shape):
     window = _make_window(qapp)

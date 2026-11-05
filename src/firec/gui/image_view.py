@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import sys
 from math import hypot
+from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt
-from PySide6.QtGui import QBrush, QColor, QFont, QImage, QKeyEvent, QPen, QPixmap, QPolygonF
+from PySide6.QtGui import QBrush, QColor, QCursor, QFont, QImage, QKeyEvent, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import QFrame, QGraphicsItem, QGraphicsPixmapItem, QGraphicsPolygonItem, QGraphicsScene, QGraphicsView, QSizePolicy
 
 from firec.core.analysis import normalize_for_display
@@ -13,6 +15,7 @@ from firec.core.geometry import Point, RotatedRect
 
 
 EDGE_NAMES = ("top", "right", "bottom", "left")
+NAVIGATION_CONTROL_MODIFIER = Qt.MetaModifier if sys.platform == "darwin" else Qt.ControlModifier
 PROFILE_LINE_COLOR = QColor(45, 135, 220)
 PROFILE_LINE_SELECTED_COLOR = QColor(0, 210, 255)
 RADIATION_COLOR = QColor(60, 210, 100)
@@ -112,6 +115,9 @@ class ImageView(QGraphicsView):
         self.dash_interval = 7
         self.editing_enabled = True
         self._tool_mode: str | None = None
+        self._temporary_navigation_mode: str | None = None
+        loupe = QPixmap(str(Path(__file__).parent / "assets/icons/tools/tools_loupe.png"))
+        self._zoom_cursor = QCursor(loupe.scaled(28, 28, Qt.KeepAspectRatio, Qt.SmoothTransformation), 16, 11)
         self._circle_roi: tuple[Point, float] | None = None
         self._rect_roi: tuple[Point, Point] | None = None
         self._ruler_points: tuple[Point, Point] | None = None
@@ -120,6 +126,8 @@ class ImageView(QGraphicsView):
         self._roi_drag_anchor: QPointF | None = None
         self._roi_drag_offset: QPointF | None = None
         self._zoom_drag_center: QPointF | None = None
+        self._zoom_radial_center: QPointF | None = None
+        self.on_navigation_mode_changed: Callable[[], None] | None = None
         self.on_rect_changed: Callable[[str, RotatedRect], None] | None = None
         self.on_tab_navigation: Callable[[bool], None] | None = None
         self.on_profile_lines_changed: Callable[[dict[str, tuple[Point, Point]]], None] | None = None
@@ -322,6 +330,7 @@ class ImageView(QGraphicsView):
             self._roi_drag_anchor = None
             self._roi_drag_offset = None
             self._zoom_drag_center = None
+            self._zoom_radial_center = None
             if mode != "ruler":
                 self._ruler_pending_start = None
         self._tool_mode = mode
@@ -330,12 +339,40 @@ class ImageView(QGraphicsView):
     def set_pan_enabled(self, enabled: bool) -> None:
         self.set_tool_mode("pan" if enabled else None)
 
+    def effective_tool_mode(self) -> str | None:
+        return self._temporary_navigation_mode or self._tool_mode
+
+    def set_navigation_modifiers(self, modifiers: Qt.KeyboardModifiers) -> None:
+        if modifiers & NAVIGATION_CONTROL_MODIFIER:
+            mode = "zoom"
+        elif modifiers & Qt.ShiftModifier:
+            mode = "pan"
+        else:
+            mode = None
+        if mode == self._temporary_navigation_mode:
+            return
+        self._temporary_navigation_mode = mode
+        self._apply_tool_cursor()
+        if self.on_navigation_mode_changed is not None:
+            self.on_navigation_mode_changed()
+
+    def cancel_navigation(self) -> None:
+        if self._drag_mode in ("pan", "zoom"):
+            self._drag_mode = None
+            self._last_scene_pos = None
+            self._last_view_pos = None
+            self._zoom_drag_center = None
+            self._zoom_radial_center = None
+        self.set_navigation_modifiers(Qt.NoModifier)
+        self._apply_tool_cursor()
+
     def _apply_tool_cursor(self) -> None:
-        if self._tool_mode == "pan":
+        mode = self.effective_tool_mode()
+        if mode == "pan":
             self.setCursor(Qt.OpenHandCursor)
-        elif self._tool_mode == "zoom":
-            self.setCursor(Qt.SizeVerCursor)
-        elif self._tool_mode is None:
+        elif mode == "zoom":
+            self.setCursor(self._zoom_cursor)
+        elif mode is None:
             self.setCursor(Qt.ArrowCursor)
         else:
             self.setCursor(Qt.CrossCursor)
@@ -577,11 +614,29 @@ class ImageView(QGraphicsView):
         event.accept()
 
     def mousePressEvent(self, event) -> None:
-        if event.button() != Qt.LeftButton:
+        mac_control_click = (
+            sys.platform == "darwin" and event.button() == Qt.RightButton
+            and bool(event.modifiers() & NAVIGATION_CONTROL_MODIFIER)
+        )
+        if event.button() != Qt.LeftButton and not mac_control_click:
             super().mousePressEvent(event)
             return
 
+        self.set_navigation_modifiers(event.modifiers())
         scene_pos = self.mapToScene(event.position().toPoint())
+        mode = self.effective_tool_mode()
+        if mode == "zoom":
+            self._zoom_tool_press(event.position())
+            event.accept()
+            return
+        if mode == "pan":
+            self._drag_mode = "pan"
+            self._drag_edge = None
+            self._last_scene_pos = scene_pos
+            self._last_view_pos = event.position()
+            self.setCursor(Qt.ClosedHandCursor)
+            event.accept()
+            return
         if self._tool_mode in ("circle", "rect", "ruler", "zoom"):
             self._handle_tool_mouse_press(scene_pos, event.position())
             event.accept()
@@ -606,16 +661,23 @@ class ImageView(QGraphicsView):
             self._drag_edge = target
             self._set_selected_profile_line(None)
             self.select_target(target)
-        elif self._tool_mode == "pan":
-            self._drag_mode = "pan"
-            self._drag_edge = None
-            self.setCursor(Qt.ClosedHandCursor)
         else:
             self._drag_mode = None
             self._drag_edge = None
         event.accept()
 
     def mouseMoveEvent(self, event) -> None:
+        if self._drag_mode == "zoom":
+            self._zoom_tool_move(event.position())
+            event.accept()
+            return
+        if self._drag_mode == "pan" and self._last_view_pos is not None:
+            delta = event.position() - self._last_view_pos
+            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - int(delta.x()))
+            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - int(delta.y()))
+            self._last_view_pos = event.position()
+            event.accept()
+            return
         if self._tool_mode in ("circle", "rect", "ruler", "zoom") and self._handle_tool_mouse_move(
             self.mapToScene(event.position().toPoint()),
             event.position(),
@@ -648,14 +710,20 @@ class ImageView(QGraphicsView):
             dx, dy = self._constrained_light_delta(self._drag_edge, dx, dy)
             self._update_active_rect(self._move_target(active_rect, self._drag_edge, dx, dy))
             self._last_scene_pos = scene_pos
-        elif self._drag_mode == "pan":
-            delta = event.position() - self._last_view_pos
-            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - int(delta.x()))
-            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - int(delta.y()))
-            self._last_view_pos = event.position()
         event.accept()
 
     def mouseReleaseEvent(self, event) -> None:
+        if self._drag_mode == "zoom":
+            self._zoom_tool_release(self.mapToScene(event.position().toPoint()))
+            event.accept()
+            return
+        if self._drag_mode == "pan":
+            self._drag_mode = None
+            self._last_scene_pos = None
+            self._last_view_pos = None
+            self._apply_tool_cursor()
+            event.accept()
+            return
         if self._tool_mode in ("circle", "rect", "ruler", "zoom") and self._handle_tool_mouse_release(self.mapToScene(event.position().toPoint())):
             event.accept()
             return
@@ -1387,14 +1455,18 @@ class ImageView(QGraphicsView):
         self._drag_edge = None
         self._last_view_pos = view_pos
         self._zoom_drag_center = self.visible_scene_rect().center()
+        self._zoom_radial_center = (
+            QPointF(self.mapFromScene(self._pixmap_item.sceneBoundingRect().center()))
+            if self._pixmap_item is not None else None
+        )
 
     def _zoom_tool_move(self, view_pos: QPointF) -> bool:
-        if self._drag_mode != "zoom" or self._last_view_pos is None or self._zoom_drag_center is None:
+        if self._drag_mode != "zoom" or self._last_view_pos is None or self._zoom_drag_center is None or self._zoom_radial_center is None:
             return False
-        delta = view_pos - self._last_view_pos
-        if delta.y() == 0:
+        distance_delta = self._point_distance(self._last_view_pos, self._zoom_radial_center) - self._point_distance(view_pos, self._zoom_radial_center)
+        if distance_delta == 0:
             return True
-        factor = pow(1.004, -delta.y())
+        factor = pow(1.004, distance_delta)
         factor = max(0.5, min(2.0, factor))
         self._zoom_by(factor, self._zoom_drag_center)
         self._last_view_pos = view_pos
@@ -1406,6 +1478,7 @@ class ImageView(QGraphicsView):
         self._drag_mode = None
         self._last_view_pos = None
         self._zoom_drag_center = None
+        self._zoom_radial_center = None
         self._apply_tool_cursor()
         return True
 

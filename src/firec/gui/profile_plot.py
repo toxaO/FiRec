@@ -38,7 +38,6 @@ class ProfilePlot(QWidget):
             self.setFixedWidth(40)
         else:
             self.setFixedHeight(40)
-        self.setMinimumSize(self.sizeHint())
 
     def sizeHint(self) -> QSize:
         if self.orientation == "vertical":
