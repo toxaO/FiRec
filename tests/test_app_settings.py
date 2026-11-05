@@ -684,6 +684,48 @@ def test_operation_help_tracks_tool_and_returns_to_current_stage(qapp, isolated_
     window.close()
 
 
+@pytest.mark.parametrize("shape", ["circle", "rect"])
+def test_baseline_roi_inserts_measurement_only_on_click(qapp, isolated_settings, shape):
+    window = _make_window(qapp)
+    image = np.arange(25, dtype=np.uint16).reshape(5, 5)
+    window.image = image
+    window.view.set_image(image)
+    window.go_to_stage("radiation")
+    window.film_pixel_spin.setValue(100)
+    window.baseline_roi_button.click()
+    assert window.film_pixel_spin.value() == 100
+    assert window.tool_mode is None
+    if shape == "circle":
+        window.circle_tool_button.click()
+        window.view.set_circle_roi((Point(2, 2), 1))
+    else:
+        window.rect_tool_button.click()
+        window.view.set_rect_roi((Point(1, 1), Point(4, 4)))
+    assert window.film_pixel_spin.value() == 100
+    window.baseline_roi_button.click()
+    assert window.film_pixel_spin.value() == 12
+    assert window.tool_mode == shape
+    assert window.tool_result_label.text().endswith("12.0")
+    if shape == "circle":
+        window.view.set_circle_roi((Point(3, 2), 1))
+    else:
+        window.view.set_rect_roi((Point(2, 1), Point(5, 4)))
+    assert window.film_pixel_spin.value() == 12
+    window.baseline_roi_button.click()
+    assert window.film_pixel_spin.value() == 13
+    if shape == "circle":
+        window.view.set_circle_roi((Point(3, 2), 0))
+    else:
+        window.view.set_rect_roi((Point(2, 1), Point(2, 4)))
+    window.baseline_roi_button.click()
+    assert window.film_pixel_spin.value() == 13
+    window.pan_tool_button.click()
+    window.baseline_roi_button.click()
+    assert window.film_pixel_spin.value() == 13
+    assert window.tool_mode == "pan"
+    window.close()
+
+
 def test_radiation_stage_keeps_profile_visibility_toggles(qapp, isolated_settings):
     window = _make_window(qapp)
     image = np.arange(25, dtype=np.float32).reshape(5, 5)

@@ -591,7 +591,7 @@ class MainWindow(QMainWindow):
             self.ruler_tool_button,
         ):
             tool_row.addWidget(button)
-        tool_row.addWidget(QLabel("結果"))
+        tool_row.addWidget(QLabel("ROI画素値平均"))
         self.tool_result_label.setMinimumWidth(120)
         self.tool_result_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         tool_row.addWidget(self.tool_result_label, 1)
@@ -697,7 +697,13 @@ class MainWindow(QMainWindow):
             0,
             0,
         )
-        settings_layout.addWidget(self.film_pixel_spin, 0, 1)
+        self.baseline_roi_button = _button("ROIで設定")
+        self.baseline_roi_button.setToolTip("円形・矩形ツールで測定したROIの平均画素値を、ベース画素値に挿入します。")
+        self.baseline_roi_button.clicked.connect(self._set_baseline_from_roi)
+        baseline_row = QHBoxLayout()
+        baseline_row.addWidget(self.film_pixel_spin, 1)
+        baseline_row.addWidget(self.baseline_roi_button)
+        settings_layout.addLayout(baseline_row, 0, 1)
         settings_layout.addWidget(
             _tooltip_label(
                 "閾値",
@@ -815,6 +821,7 @@ class MainWindow(QMainWindow):
         frame.mousePressEvent = lambda event: self.go_to_stage("radiation")
         return frame, [
             self.film_pixel_spin,
+            self.baseline_roi_button,
             self.radiation_threshold_spin,
             self.radiation_center_spin,
             self.smoothing_window_spin,
@@ -2026,6 +2033,25 @@ class MainWindow(QMainWindow):
         }
         text = tool_help.get(mode, stage_help[self.current_stage])
         self.operation_help.setText(text + "\n画像のダブルクリックで表示位置と倍率をリセットできます。")
+
+    def _set_baseline_from_roi(self) -> None:
+        if self.image is None:
+            return
+        try:
+            if self.tool_mode == "circle" and self.circle_roi is not None:
+                value = circular_region_mean(self.image, *self.circle_roi)
+                label = "円"
+            elif self.tool_mode == "rect" and self.rect_roi is not None:
+                value = rectangular_region_mean(self.image, *self.rect_roi)
+                label = "矩形"
+            else:
+                self.status.showMessage("円形または矩形ツールで未照射部分にROIを配置してください。")
+                return
+        except ValueError:
+            self.status.showMessage("ROI内の平均画素値を取得できません。ROIの位置と大きさを確認してください。")
+            return
+        self.film_pixel_spin.setValue(value)
+        self.tool_result_label.setText(f"{label}: {self._format_measurement(value)}")
 
     def _toggle_tool_mode(self, mode: str) -> None:
         self._set_tool_mode(None if self.tool_mode == mode else mode)
