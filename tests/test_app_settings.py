@@ -553,6 +553,7 @@ def test_laser_stage_updates_center_from_profile_lines(qapp, isolated_settings):
     window.image = image
     window.activate_stage("laser")
 
+    window.view.set_laser_center(Point(2.0, 2.0))
     window.view.set_profile_line_positions(left_x=1.0, bottom_y=3.0)
 
     assert window.laser_center == Point(1.0, 3.0)
@@ -568,6 +569,7 @@ def test_laser_stage_populates_left_and_bottom_profiles_only(qapp, isolated_sett
     window.image = image
     window.activate_stage("laser")
 
+    window.view.set_laser_center(Point(2.0, 2.0))
     window.view.set_profile_line_positions(left_x=1.0, bottom_y=3.0)
 
     assert window.left_profile_plot.values is not None
@@ -587,6 +589,8 @@ def test_laser_stage_forces_raw_profile_visible_even_when_saved_toggles_are_off(
     window.view.set_image(image)
     window.image = image
     window.activate_stage("laser")
+    window.view.set_laser_center(Point(2.0, 2.0))
+    window.view.set_profile_line_positions(left_x=2.0, bottom_y=2.0)
 
     assert window.left_profile_plot.raw_profile_visible is True
     assert window.bottom_profile_plot.raw_profile_visible is True
@@ -950,11 +954,17 @@ def test_radiation_layout_stays_stable_when_switching_modes(qapp, isolated_setti
     window.close()
 
 
-def _loaded_navigation_window(qapp):
+def _loaded_navigation_window(qapp, *, place_laser=True):
+    from PySide6.QtCore import Qt
+
     window = _make_window(qapp)
     window.load_path(Path(__file__).parents[1] / "sample" / "sample.tif")
     window.radiation_profile_distance_spin.setValue(13.0)
-    window.go_to_stage("radiation")
+    if place_laser:
+        height, width = window.image.shape
+        position = window.view.mapFromScene((width - 1) / 2, (height - 1) / 2)
+        QTest.mouseClick(window.view.viewport(), Qt.LeftButton, pos=position)
+        window.go_to_stage("radiation")
     return window
 
 
@@ -962,11 +972,15 @@ def test_laser_center_can_be_placed_by_click_then_adjusted_by_drag(qapp, isolate
     from PySide6.QtCore import QEvent, QPointF, Qt
     from PySide6.QtGui import QMouseEvent
 
-    window = _loaded_navigation_window(qapp)
-    window.go_to_stage("laser")
+    window = _loaded_navigation_window(qapp, place_laser=False)
     window.show()
     qapp.processEvents()
     view = window.view
+    assert window.laser_center is None
+    assert not view.profile_lines_visible
+    assert all(plot.values is None for plot in window.profile_plots.values())
+    window.detect_radiation_field()
+    assert window.radiation_rect is None
     height, width = window.image.shape
     for fraction in (0.7, 0.3):
         position = view.mapFromScene(width * fraction, height * fraction)
@@ -987,6 +1001,9 @@ def test_laser_center_can_be_placed_by_click_then_adjusted_by_drag(qapp, isolate
         qapp.sendEvent(view.viewport(), QMouseEvent(kind, QPointF(position), QPointF(position), button, buttons, Qt.NoModifier))
     assert window.laser_center.x > center.x
     assert window.laser_center.y == center.y
+    window.reset_laser_center()
+    assert window.laser_center is None
+    assert not view.profile_lines_visible
     window.close()
 
 
@@ -1125,8 +1142,7 @@ def test_result_automatically_reports_all_missing_inputs(qapp, isolated_settings
 
 
 def test_light_field_can_be_adjusted_before_radiation_detection(qapp, isolated_settings):
-    window = _make_window(qapp)
-    window.load_path(Path(__file__).parents[1] / "sample" / "sample.tif")
+    window = _loaded_navigation_window(qapp)
     window.go_to_stage("light")
     assert window.light_rect is not None
     adjusted = RotatedRect(Point(350, 340), 220, 240, 0)

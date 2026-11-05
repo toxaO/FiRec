@@ -691,6 +691,8 @@ class ImageView(QGraphicsView):
             if self.editing_enabled and self.active_field == "laser" and self._image_shape is not None:
                 height, width = self._image_shape
                 if 0 <= scene_pos.x() < width and 0 <= scene_pos.y() < height:
+                    self.set_laser_center(Point(scene_pos.x(), scene_pos.y()))
+                    self.profile_lines_visible = True
                     self.set_profile_line_positions(left_x=scene_pos.x(), bottom_y=scene_pos.y())
         event.accept()
 

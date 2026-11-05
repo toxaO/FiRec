@@ -680,7 +680,7 @@ class MainWindow(QMainWindow):
         self.laser_status_label = QLabel("レーザー中心を設定してください。")
         reset_button = _button("リセット")
         reset_button.clicked.connect(self.reset_laser_center)
-        reset_button.setToolTip("レーザー中心を画像中央へ戻します。")
+        reset_button.setToolTip("レーザー中心の指定を解除します。")
 
         layout = QVBoxLayout()
         layout.addWidget(self.laser_status_label)
@@ -1193,10 +1193,6 @@ class MainWindow(QMainWindow):
             self.view.set_image(self.image)
             self._update_image_info()
             self._set_default_radiation_settings()
-            self.laser_center = self._default_laser_center()
-            self._set_laser_profile_lines()
-            self._set_laser_profile_cursors()
-            self.view.set_laser_center(self.laser_center)
             self.view.set_radiation_rect(None)
             self.view.set_light_rect(None)
             self.view.set_circle_roi(None)
@@ -1320,7 +1316,7 @@ class MainWindow(QMainWindow):
     def _auto_radiation_profile_positions(self) -> dict[str, float] | None:
         if self.image is None:
             return None
-        center = self.laser_center or self._default_laser_center()
+        center = self.laser_center
         if center is None:
             return None
         dpi = self._effective_dpi()
@@ -1481,7 +1477,7 @@ class MainWindow(QMainWindow):
     def activate_stage(self, stage: str) -> None:
         if stage not in _stage_names():
             return
-        if self.current_stage == "radiation":
+        if self.current_stage == "radiation" and self.laser_center is not None:
             self._radiation_profile_positions = self._manual_radiation_profile_positions_from_view()
         if stage == "light" and self.light_rect is None:
             self.reset_light_field()
@@ -1503,7 +1499,7 @@ class MainWindow(QMainWindow):
                 self.selected_profile_line = "bottom"
             self.view.select_profile_line(self.selected_profile_line)
             self.view.set_profile_orientation(None)
-            self.view.set_profile_lines_visible(True)
+            self.view.set_profile_lines_visible(self.laser_center is not None)
             self.view.set_profile_lines_editable(True)
         elif stage == "radiation":
             self.view.set_active_field("radiation")
@@ -1511,7 +1507,7 @@ class MainWindow(QMainWindow):
                 self.view.select_profile_line("top")
             self.view.set_visible_profile_lines(None)
             self.view.set_profile_orientation(None)
-            self.view.set_profile_lines_visible(True)
+            self.view.set_profile_lines_visible(self.laser_center is not None)
             if self._radiation_profile_positions is None:
                 self._radiation_profile_positions = self._auto_radiation_profile_positions()
             self._apply_radiation_profile_positions(self._radiation_profile_positions)
@@ -1558,16 +1554,7 @@ class MainWindow(QMainWindow):
     def _set_default_profile_lines(self) -> None:
         self._refresh_radiation_profile_lines(force_manual_sync=self.radiation_profile_mode == "manual" and not self._manual_radiation_profile_dirty)
 
-    def _default_laser_center(self) -> Point | None:
-        shape = self.view.image_shape()
-        if shape is None:
-            return None
-        height, width = shape
-        return Point((width - 1.0) / 2.0, (height - 1.0) / 2.0)
-
     def _set_laser_profile_lines(self) -> None:
-        if self.laser_center is None:
-            self.laser_center = self._default_laser_center()
         if self.laser_center is None:
             return
         self.view.set_profile_line_positions(
@@ -1577,8 +1564,6 @@ class MainWindow(QMainWindow):
 
     def _set_laser_profile_cursors(self) -> None:
         if self.laser_center is None:
-            self.laser_center = self._default_laser_center()
-        if self.laser_center is None:
             return
         self.profile_cursors["laser_x"] = self.laser_center.x
         self.profile_cursors["laser_y"] = self.laser_center.y
@@ -1587,9 +1572,7 @@ class MainWindow(QMainWindow):
         if self.current_stage != "laser":
             return
         if self.laser_center is None:
-            self.laser_center = self._default_laser_center()
-        if self.laser_center is None:
-            QMessageBox.warning(self, "レーザー中心なし", "レーザー中心を設定する前に画像を読み込んでください。")
+            QMessageBox.warning(self, "レーザー中心なし", "画像上をクリックしてレーザー中心を設定してください。")
             return
         self.completed_stages.add("laser")
         self._sync_stage_controls()
@@ -1597,15 +1580,13 @@ class MainWindow(QMainWindow):
     def reset_laser_center(self) -> None:
         if self.image is None:
             return
-        center = self._default_laser_center()
-        if center is None:
-            return
-        self.laser_center = center
-        self._set_laser_profile_lines()
-        self._set_laser_profile_cursors()
-        self.view.set_laser_center(self.laser_center)
-        self._sync_laser_step_ui()
-        self._update_result_label()
+        self.laser_center = None
+        self.profile_cursors.pop("laser_x", None)
+        self.profile_cursors.pop("laser_y", None)
+        self.completed_stages.discard("laser")
+        self._radiation_profile_positions = None
+        self.view.set_laser_center(None)
+        self.go_to_stage("laser")
         self.status.showMessage("レーザー中心をリセットしました。")
 
     def confirm_radiation_field(self) -> None:
@@ -1782,12 +1763,14 @@ class MainWindow(QMainWindow):
             for plot in self.profile_plots.values():
                 plot.set_profile(None, None, ())
             return
-        if self.current_stage == "laser":
+        if self.current_stage == "laser" and self.view.laser_center is not None:
             self._sync_laser_center_from_lines(lines)
         if self.current_stage == "radiation" and self.radiation_profile_mode == "manual" and not self._applying_radiation_profile_lines and not self._navigating_stage:
             self.manual_radiation_profile_lines = self._manual_radiation_profile_positions_from_view()
             self._manual_radiation_profile_dirty = self.manual_radiation_profile_lines is not None
         active_lines = {"left", "bottom"} if self.current_stage == "laser" else set(lines)
+        if self.current_stage in ("laser", "radiation") and self.laser_center is None:
+            active_lines = set()
         changed_lines = self._changed_profile_lines(lines)
         if self.current_stage == "radiation" and not self._navigating_stage:
             self._auto_update_radiation_cursors(lines, changed_lines)
@@ -1997,7 +1980,7 @@ class MainWindow(QMainWindow):
     ) -> None:
         if self.image is None:
             return
-        center = self.laser_center or self._default_laser_center()
+        center = self.laser_center
         if center is None:
             return
         for line_name in line_names:
@@ -2252,8 +2235,6 @@ class MainWindow(QMainWindow):
 
     def _update_laser_center_from_cursors(self) -> None:
         if self.laser_center is None:
-            self.laser_center = self._default_laser_center()
-        if self.laser_center is None:
             return
         x = self.profile_cursors.get("laser_x", self.laser_center.x)
         y = self.profile_cursors.get("laser_y", self.laser_center.y)
@@ -2412,6 +2393,9 @@ class MainWindow(QMainWindow):
 
     def detect_radiation_field(self) -> None:
         if self.image is None:
+            return
+        if self.laser_center is None:
+            self.status.showMessage("画像上をクリックしてレーザー中心を設定してください。")
             return
         self.go_to_stage("radiation")
         self._refresh_radiation_profile_lines()
