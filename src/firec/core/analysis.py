@@ -186,12 +186,14 @@ def detect_profile_boundaries(
     center_range_mm: float = 20.0,
     dpi: float = 72.0,
     smoothing_window: int = 5,
+    center_position: float | None = None,
 ) -> ProfileBoundaryDetection:
     if positions.size != values.size or values.size < 3:
         raise ValueError("Profile must contain at least three samples.")
 
     smoothed = moving_average_profile(values, smoothing_window)
-    center_position = (float(np.min(positions)) + float(np.max(positions))) / 2.0
+    if center_position is None:
+        center_position = (float(np.min(positions)) + float(np.max(positions))) / 2.0
     range_px = max(0.0, float(center_range_mm)) * (float(dpi) / 25.4 if dpi > 0 else 1.0)
     center_mask = np.abs(positions - center_position) <= range_px
     if np.any(center_mask):

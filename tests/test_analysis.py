@@ -1,6 +1,7 @@
 import sqlite3
 
 import numpy as np
+import pytest
 import cv2
 
 from firec.core.analysis import (
@@ -333,3 +334,23 @@ def test_uncalibrated_boundary_center_range_uses_pixels():
     assert result.center_end_position == 6
     assert result.left_position == 2.9
     assert result.right_position == 7.1
+
+
+@pytest.mark.parametrize("dpi", [0, 25.4])
+def test_profile_boundaries_preserve_film_positions_after_cropping(dpi):
+    values = np.full(81, 100.0)
+    values[13:28] = 10.0
+    detections = []
+    for start, end in ((0, 81), (5, 40)):
+        profile = values[start:end]
+        detection = detect_profile_boundaries(
+            np.arange(profile.size, dtype=float), profile, 100,
+            center_range_mm=1, dpi=dpi, smoothing_window=1,
+            center_position=20 - start,
+        )
+        assert detection.radiation_pixel_value == 10
+        assert detection.threshold_pixel_value == 55
+        assert detection.center_start_position + start == 19
+        assert detection.center_end_position + start == 21
+        detections.append((detection.left_position + start, detection.right_position + start))
+    assert detections == [(12.5, 27.5), (12.5, 27.5)]

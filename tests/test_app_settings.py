@@ -87,6 +87,44 @@ def _make_window(qapp):
     return window
 
 
+def test_radiation_detection_uses_laser_center_for_averaging(qapp, isolated_settings):
+    window = _make_window(qapp)
+    image = np.full((61, 81), 100, dtype=np.uint16)
+    image[8:23, 13:28] = 10
+    window.image = image
+    window.view.set_image(image)
+    window.laser_center = Point(20, 15)
+    window._set_analyse_dpi_mode("numeric")
+    window.pixel_length.setText("")
+    window.film_pixel_spin.setValue(100)
+    window.radiation_threshold_spin.setValue(50)
+    window.radiation_center_spin.setValue(1)
+    window.smoothing_window_spin.setValue(1)
+    lines = {
+        "top": (Point(0, 14), Point(80, 14)),
+        "bottom": (Point(0, 16), Point(80, 16)),
+        "left": (Point(19, 0), Point(19, 60)),
+        "right": (Point(21, 0), Point(21, 60)),
+    }
+
+    window._auto_update_radiation_cursors(lines, set(lines))
+
+    assert window._auto_detection_failures == {}
+    for name in ("top", "bottom"):
+        assert window._profile_display_markers[name][2] == (19, 21)
+    for name in ("left", "right"):
+        assert window._profile_display_markers[name][2] == (14, 16)
+    for name in ("L1", "L2"):
+        assert window.profile_cursors[name] == 12.5
+    for name in ("R1", "R2"):
+        assert window.profile_cursors[name] == 27.5
+    for name in ("U1", "U2"):
+        assert window.profile_cursors[name] == 7.5
+    for name in ("D1", "D2"):
+        assert window.profile_cursors[name] == 22.5
+    window.close()
+
+
 def _find_label(window, text: str) -> QLabel:
     for label in window.findChildren(QLabel):
         if label.text() == text:
@@ -615,7 +653,7 @@ def test_radiation_stage_keeps_profile_visibility_toggles(qapp, isolated_setting
 
 def _loaded_navigation_window(qapp):
     window = _make_window(qapp)
-    window.load_path(Path(__file__).parents[1] / "sample" / "img.tif")
+    window.load_path(Path(__file__).parents[1] / "sample" / "sample.tif")
     window.radiation_profile_distance_spin.setValue(13.0)
     window.go_to_stage("radiation")
     return window
@@ -737,7 +775,7 @@ def test_result_automatically_reports_all_missing_inputs(qapp, isolated_settings
 
 def test_light_field_can_be_adjusted_before_radiation_detection(qapp, isolated_settings):
     window = _make_window(qapp)
-    window.load_path(Path(__file__).parents[1] / "sample" / "img.tif")
+    window.load_path(Path(__file__).parents[1] / "sample" / "sample.tif")
     window.go_to_stage("light")
     assert window.light_rect is not None
     adjusted = RotatedRect(Point(350, 340), 220, 240, 0)

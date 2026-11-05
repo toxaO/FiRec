@@ -1886,6 +1886,9 @@ class MainWindow(QMainWindow):
     ) -> None:
         if self.image is None:
             return
+        center = self.laser_center or self._default_laser_center()
+        if center is None:
+            return
         for line_name in line_names:
             point_names = PROFILE_POINT_NAMES.get(line_name)
             line = lines.get(line_name)
@@ -1909,6 +1912,7 @@ class MainWindow(QMainWindow):
                     self.radiation_center_spin.value(),
                     self._effective_dpi(),
                     self.smoothing_window_spin.value(),
+                    center_position=center.x if line_name in ("top", "bottom") else center.y,
                 )
             except ValueError as error:
                 self._auto_detection_failures[line_name] = str(error)
