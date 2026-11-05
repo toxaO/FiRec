@@ -584,10 +584,18 @@ class ImageView(QGraphicsView):
     def reset_view(self) -> None:
         if self._pixmap_item is None:
             return
-        self.setSceneRect(QRectF())
+        self.setSceneRect(self._pan_bounds())
         self.resetTransform()
         self.fitInView(self._pixmap_item, Qt.KeepAspectRatio)
         self._emit_visible_scene_rect_changed()
+
+    def _pan_bounds(self) -> QRectF:
+        if self._pixmap_item is None:
+            return QRectF()
+        bounds = self._pixmap_item.sceneBoundingRect()
+        dx = bounds.width() / 2
+        dy = bounds.height() / 2
+        return bounds.adjusted(-dx, -dy, dx, dy)
 
     def zoom_in(self) -> None:
         self._zoom_by(1.1, self.visible_scene_rect().center())
@@ -1496,7 +1504,7 @@ class ImageView(QGraphicsView):
         visible = self.visible_scene_rect().translated(offset)
         # Allow the viewport to extend past the image so its edges cannot clamp the anchor.
         margin = 2.0 / self.transform().m11()
-        self.setSceneRect(self.scene().sceneRect().united(visible.adjusted(-margin, -margin, margin, margin)))
+        self.setSceneRect(self._pan_bounds().united(visible.adjusted(-margin, -margin, margin, margin)))
         self.centerOn(visible.center())
         self._emit_visible_scene_rect_changed()
 

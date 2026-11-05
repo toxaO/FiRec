@@ -564,11 +564,22 @@ class MainWindow(QMainWindow):
 
     def _tool_frame(self) -> QWidget:
         self.pan_tool_button = _icon_tool_button("tools_hand.png", "移動：画像をドラッグして表示位置を調整します。\nショートカット：Shift＋ドラッグで一時的に移動。\nキーを離すと元のツールに戻ります。\nボタンの再クリックで解析操作へ戻ります。")
-        self.zoom_tool_button = _icon_tool_button("tools_loupe.png", "ズーム：上へドラッグすると拡大、下へドラッグすると縮小します。\nショートカット：Ctrl＋ドラッグでも同じ操作ができます。\nキーを離すと元のツールに戻ります。\nボタンの再クリックで解析操作へ戻ります。")
+        self.zoom_tool_button = _icon_tool_button(
+            "tools_loupe.png",
+            "ズーム：上へドラッグすると拡大、下へドラッグすると縮小します。\n"
+            "Ctrl＋ドラッグでも同じ操作ができます。キーを離すと元のツールに戻ります。\n"
+            "画像上でスクロールすると、カーソル位置を基準に上で拡大、下で縮小します。\n"
+            "ボタンの再クリックで解析操作へ戻ります。",
+        )
         self.circle_tool_button = _icon_tool_button("tools_circle.png", "円：中心からドラッグして円を描き、\n円内の平均画素値を測定します。")
         self.rect_tool_button = _icon_tool_button("tools_rect.png", "矩形：対角の角へドラッグして範囲を指定し、\n平均画素値を測定します。")
         self.ruler_tool_button = _icon_tool_button("tools_ruler.png", "定規：画像上の2点をクリックして距離を測定します。\n端点はドラッグで調整できます。")
-        reset_button = _icon_tool_button("tools_reset.png", "画像全体を表示：表示位置と倍率をリセットします。\n解析内容は保持します。")
+        reset_button = _icon_tool_button(
+            "tools_reset.png",
+            "画像全体を表示：表示位置と倍率をリセットします。\n"
+            "画像上のダブルクリックでもリセットできます。\n"
+            "解析内容は保持します。",
+        )
         reset_button.clicked.connect(self.view.reset_view)
 
         for button in (

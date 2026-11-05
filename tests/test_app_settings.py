@@ -828,7 +828,8 @@ def test_modifier_drags_pan_and_zoom_without_moving_profile_lines(qapp):
     view.set_image(np.zeros((1000, 1000), dtype=np.uint16))
     view.show()
     qapp.processEvents()
-    view.scale(3, 3)
+    assert view.sceneRect().width() == 2000
+    assert view.sceneRect().height() == 2000
     view.centerOn(500, 500)
     lines = view.profile_lines()
 
