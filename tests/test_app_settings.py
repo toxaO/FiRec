@@ -671,16 +671,21 @@ def test_open_button_loads_image_from_entered_path(qapp, isolated_settings, tmp_
     window.close()
 
 
-def test_operation_help_tracks_tool_and_returns_to_current_stage(qapp, isolated_settings):
+def test_operation_help_stays_on_current_stage_and_shortcuts_have_tooltip(qapp, isolated_settings):
     window = _make_window(qapp)
     stage_help = window.operation_help.text()
     window.pan_tool_button.click()
-    assert "移動" in window.operation_help.text()
-    assert window.operation_help.text() != stage_help
-    window.ruler_tool_button.click()
-    assert "2点" in window.operation_help.text()
+    assert window.operation_help.text() == stage_help
     window.ruler_tool_button.click()
     assert window.operation_help.text() == stage_help
+    window.ruler_tool_button.click()
+    assert window.operation_help.text() == stage_help
+    window.go_to_stage("light")
+    assert window.operation_help.text().startswith("光照射野：")
+    assert "Ctrl" not in window.operation_help.text()
+    tooltip = window.tool_help_button.toolTip()
+    assert "Shift" in tooltip and "Ctrl" in tooltip
+    assert "ダブルクリック" in tooltip
     window.close()
 
 

@@ -307,7 +307,7 @@ class MainWindow(QMainWindow):
     def _sync_navigation_tool_display(self) -> None:
         mode = self.view.effective_tool_mode()
         self._sync_tool_buttons(mode)
-        self._sync_operation_help(mode)
+        self._sync_operation_help()
 
     def _build_layout(self) -> None:
         self.main_tabs.addTab(self._analyse_tab(), "解析")
@@ -611,11 +611,35 @@ class MainWindow(QMainWindow):
             if button is self.circle_tool_button:
                 tool_row.addSpacing(12)
             tool_row.addWidget(button)
-        tool_row.addWidget(QLabel("ROI画素値平均"))
+        tool_row.addWidget(QLabel("結果"))
         self.tool_result_label.setMinimumWidth(120)
         self.tool_result_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         tool_row.addWidget(self.tool_result_label, 1)
         tool_row.addWidget(self.display_toggle)
+        self.tool_help_button = QToolButton()
+        self.tool_help_button.setProperty("helpButton", True)
+        self.tool_help_button.setIcon(QIcon(str(_resource_dir("assets", "icons", "help.svg"))))
+        self.tool_help_button.setIconSize(QSize(24, 24))
+        self.tool_help_button.setFixedSize(28, 28)
+        self.tool_help_button.setAccessibleName("画像ツールの操作ヘルプ")
+        self.tool_help_button.setToolTip(
+            "画像の表示操作\n"
+            "Shift＋ドラッグ：画像を移動します。\n"
+            "Ctrl＋ドラッグ：画像中心へ近づけると拡大、離すと縮小します。\n"
+            "キーを押している間は対応ツールが選択表示され、離すと元のツールに戻ります。\n"
+            "ShiftとCtrlを同時に押した場合は拡大・縮小を優先します。\n"
+            "ダブルクリック：表示位置と倍率をリセットします。解析内容は保持します。\n\n"
+            "ツールボタン\n"
+            "移動・拡大縮小ボタンを使えば、キーを押さずにドラッグで操作できます。\n"
+            "選択中のツールを再クリックすると、解析の線を操作する状態へ戻ります。"
+        )
+        self.tool_help_button.clicked.connect(
+            lambda checked=False: QToolTip.showText(
+                self.tool_help_button.mapToGlobal(self.tool_help_button.rect().bottomLeft()),
+                self.tool_help_button.toolTip(), self.tool_help_button,
+            )
+        )
+        tool_row.addWidget(self.tool_help_button, 0, Qt.AlignTop)
 
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
@@ -623,6 +647,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(tool_row)
         self.operation_help = QLabel()
         self.operation_help.setWordWrap(True)
+        self.operation_help.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         self.operation_help.setProperty("muted", True)
         self.operation_help.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         self.operation_help_scroll = QScrollArea()
@@ -631,7 +656,7 @@ class MainWindow(QMainWindow):
         self.operation_help_scroll.setFrameShape(QFrame.NoFrame)
         self.operation_help_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.operation_help_scroll.setFocusPolicy(Qt.NoFocus)
-        self.operation_help_scroll.setFixedHeight(self.operation_help.fontMetrics().lineSpacing() * 4 + 8)
+        self.operation_help_scroll.setFixedHeight(self.operation_help.fontMetrics().lineSpacing() * 2 + 8)
         layout.addWidget(self.operation_help_scroll)
 
         frame = _frame("画像ツール")
@@ -2030,7 +2055,7 @@ class MainWindow(QMainWindow):
         return max_raw - smoothed, None, None
 
     def _set_tool_mode(self, mode: str | None) -> None:
-        self._sync_operation_help(mode)
+        self._sync_operation_help()
         if mode == self.tool_mode:
             self.view.set_tool_mode(mode)
             self._sync_navigation_tool_display()
@@ -2041,14 +2066,7 @@ class MainWindow(QMainWindow):
         self.view.set_tool_mode(mode)
         self._sync_navigation_tool_display()
 
-    def _sync_operation_help(self, mode: str | None) -> None:
-        tool_help = {
-            "pan": "移動：画像をドラッグして表示位置を調整します。\n再クリックで解析操作へ戻ります。",
-            "zoom": "ズーム：画像中心方向へドラッグで拡大、外側へドラッグで縮小します。\n再クリックで解析操作へ戻ります。",
-            "circle": "円：中心からドラッグして円内の平均画素値を測定します。中心・円周の点で位置と大きさを調整できます。",
-            "rect": "矩形：対角の角へドラッグして範囲を指定し、\n平均画素値を測定します。",
-            "ruler": "定規：画像上の2点をクリックして距離を測定します。\n端点はドラッグで調整できます。",
-        }
+    def _sync_operation_help(self) -> None:
         stage_help = {
             "laser": "レーザー中心：画像の水平・垂直線をドラッグして中心を合わせます。照射野のフレームをクリックして編集対象を切り替えます。",
             "calibration": "解像度：DPI入力・TIFFタグ・mm/px入力から校正方法を選びます。",
@@ -2056,8 +2074,7 @@ class MainWindow(QMainWindow):
             "light": "光照射野：画像上の辺や頂点をドラッグして境界を合わせます。必要な入力が揃うと結果が自動更新されます。",
             "result": "結果：起点と解析値を確認し、保存します。",
         }
-        text = tool_help.get(mode, stage_help[self.current_stage])
-        self.operation_help.setText(text + "\nショートカット：Shift＋ドラッグ＝移動 ／ Ctrl＋ドラッグ＝拡大・縮小（画像中心へ拡大、外側へ縮小）。\n画像のダブルクリックで表示位置と倍率をリセットできます。")
+        self.operation_help.setText(stage_help[self.current_stage])
 
     def _set_baseline_from_roi(self) -> None:
         if self.image is None:
@@ -2412,7 +2429,7 @@ class MainWindow(QMainWindow):
         return errors
 
     def _sync_stage_controls(self) -> None:
-        self._sync_operation_help(self.tool_mode)
+        self._sync_operation_help()
         radiation_current = self._radiation_is_current()
         errors = self._result_errors()
         processed = not errors
