@@ -586,17 +586,28 @@ def test_laser_stage_forces_raw_profile_visible_even_when_saved_toggles_are_off(
     assert window.bottom_profile_plot.values is not None
 
 
-def test_display_options_toggle_reveals_all_groups_and_preserves_choices(qapp, isolated_settings):
+def test_display_options_window_preserves_choices_and_keeps_analysis_available(qapp, isolated_settings):
     window = _make_window(qapp)
     window.show()
     qapp.processEvents()
     assert not window.line_width_spin.isVisible()
+    panel_size = window.analysis_scroll.size()
     window.display_toggle.click()
     qapp.processEvents()
     controls = [window.line_width_spin, window.point_label_check, *window.display_option_checks.values()]
     assert all(control.isVisible() for control in controls)
+    dialog = window.display_dialog
+    assert dialog.isWindow()
+    assert not dialog.isModal()
+    assert window.isEnabled()
+    assert window.analysis_scroll.size() == panel_size
     window.display_option_checks["照射野境界"].setChecked(False)
+    # Repeated clicks reuse the existing window.
     window.display_toggle.click()
+    qapp.processEvents()
+    assert window.display_dialog is dialog
+    assert dialog.isVisible()
+    dialog.close()
     qapp.processEvents()
     assert not any(control.isVisible() for control in controls)
     window.display_toggle.click()
@@ -605,6 +616,8 @@ def test_display_options_toggle_reveals_all_groups_and_preserves_choices(qapp, i
     assert not window.display_option_checks["照射野境界"].isChecked()
     assert not window.view.show_radiation_edges
     window.close()
+    qapp.processEvents()
+    assert not dialog.isVisible()
 
 
 def test_profile_overlay_options_persist(qapp, isolated_settings):

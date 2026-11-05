@@ -13,6 +13,8 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QFileDialog,
     QFrame,
@@ -320,7 +322,7 @@ class MainWindow(QMainWindow):
             "light": light_controls,
             "result": result_controls,
         }
-        display_options_frame = self._display_options_frame()
+        self._build_display_options()
         side_layout.addWidget(laser_frame)
         side_layout.addWidget(resolution_frame)
         side_layout.addWidget(radiation_frame)
@@ -343,7 +345,6 @@ class MainWindow(QMainWindow):
         side_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         side_container_layout.addWidget(side_scroll, 1)
-        side_container_layout.addWidget(display_options_frame)
 
         side_container = QWidget()
         side_container.setLayout(side_container_layout)
@@ -590,6 +591,7 @@ class MainWindow(QMainWindow):
         self.tool_result_label.setMinimumWidth(120)
         self.tool_result_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         tool_row.addWidget(self.tool_result_label, 1)
+        tool_row.addWidget(self.display_toggle)
 
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
@@ -865,7 +867,7 @@ class MainWindow(QMainWindow):
         frame.mousePressEvent = lambda event: self.go_to_stage("result")
         return frame, [self.origin_combo, save_button]
 
-    def _display_options_frame(self) -> QFrame:
+    def _build_display_options(self) -> None:
         self.line_width_spin = self._display_style_spinbox(1, 20, DISPLAY_STYLE_DEFAULTS["line_width"])
         self.point_radius_spin = self._display_style_spinbox(1, 20, DISPLAY_STYLE_DEFAULTS["point_radius"])
         self.point_fill_opacity_spin = self._display_style_spinbox(0, 100, DISPLAY_STYLE_DEFAULTS["point_fill_opacity"], " %")
@@ -1007,31 +1009,31 @@ class MainWindow(QMainWindow):
         self.display_scroll.setWidgetResizable(True)
         self.display_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.display_scroll.setFrameShape(QFrame.NoFrame)
-        self.display_scroll.setFixedHeight(340)
-        self.display_scroll.hide()
+        self.display_dialog = QDialog(self)
+        self.display_dialog.setWindowTitle("表示オプション")
+        self.display_dialog.resize(560, 620)
+        self.display_dialog.setMinimumSize(480, 360)
+        dialog_layout = QVBoxLayout(self.display_dialog)
+        dialog_layout.addWidget(self.display_scroll, 1)
+        close_buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        close_buttons.button(QDialogButtonBox.Close).setText("閉じる")
+        close_buttons.rejected.connect(self.display_dialog.reject)
+        dialog_layout.addWidget(close_buttons)
 
         self.display_toggle = QToolButton()
+        self.display_toggle.setProperty("imageTool", True)
         self.display_toggle.setText("表示オプション")
-        self.display_toggle.setCheckable(True)
-        self.display_toggle.setArrowType(Qt.RightArrow)
-        self.display_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self.display_toggle.setToolTip("すべての表示設定をまとめて開閉します。\n点と線・レーザー・照射野・光照射野ごとに\n分類しています。")
+        self.display_toggle.setToolTip("表示設定を別ウィンドウで開きます。\n設定中も解析画面を操作できます。")
+        self.display_toggle.clicked.connect(self._show_display_options)
 
-        def toggle_display(checked: bool) -> None:
-            self.display_scroll.setVisible(checked)
-            self.display_toggle.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
+    def _show_display_options(self) -> None:
+        self.display_dialog.show()
+        self.display_dialog.raise_()
+        self.display_dialog.activateWindow()
 
-        self.display_toggle.toggled.connect(toggle_display)
-        frame = QFrame()
-        frame.setProperty("card", True)
-        frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        frame_layout = QVBoxLayout()
-        frame_layout.setContentsMargins(6, 4, 6, 4)
-        frame_layout.setSpacing(4)
-        frame_layout.addWidget(self.display_toggle)
-        frame_layout.addWidget(self.display_scroll)
-        frame.setLayout(frame_layout)
-        return frame
+    def closeEvent(self, event) -> None:
+        self.display_dialog.close()
+        super().closeEvent(event)
 
     def _display_check_grid(
         self,
