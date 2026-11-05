@@ -122,6 +122,16 @@ def test_radiation_detection_uses_laser_center_for_averaging(qapp, isolated_sett
         assert window.profile_cursors[name] == 7.5
     for name in ("D1", "D2"):
         assert window.profile_cursors[name] == 22.5
+    assert window.radiation_pixel_value_label.text() == "上: 10.0　下: 10.0\n左: 10.0　右: 10.0"
+    # Recalculate displayed means even after both boundary cursors were adjusted manually.
+    window.manually_adjusted_radiation_cursors.update(window.profile_cursors)
+    image[8:23, 13:28] = 20
+    window._auto_update_radiation_cursors(lines, set(lines))
+    assert window.radiation_pixel_value_label.text() == "上: 20.0　下: 20.0\n左: 20.0　右: 20.0"
+    assert window.profile_cursors["L1"] == 12.5
+    image[:] = 100
+    window._auto_update_radiation_cursors(lines, set(lines))
+    assert window.radiation_pixel_value_label.text() == "上: —　下: —\n左: —　右: —"
     window.close()
 
 
@@ -193,7 +203,7 @@ def test_analyse_parameter_labels_show_hover_help(qapp, isolated_settings):
         "未照射部分の画素値として扱う値です。未照射フィルムや照射野外の ROI の値を入れてください。"
     )
     assert "黄色線" in _find_label(window, "閾値").toolTip().replace("\n", "")
-    assert "緑線" in _find_label(window, "照射野画素値平均範囲").toolTip().replace("\n", "")
+    assert "薄い緑の範囲" in _find_label(window, "照射野画素値平均範囲").toolTip().replace("\n", "")
     assert "スムージング" in _find_label(window, "smoothed px").toolTip().replace("\n", "")
     assert "距離" in _find_label(window, "レーザー中心からのoffset").toolTip().replace("\n", "")
     assert window.radiation_profile_auto_radio.toolTip().replace("\n", "") == "レーザー中心から一定距離に 4 本のラインプロファイル線を自動配置します。"
@@ -697,6 +707,25 @@ def _loaded_navigation_window(qapp):
     window.radiation_profile_distance_spin.setValue(13.0)
     window.go_to_stage("radiation")
     return window
+
+
+@pytest.mark.parametrize("previous_stage", ["laser", "radiation", "result"])
+def test_selecting_radiation_frame_runs_detection(qapp, isolated_settings, previous_stage):
+    from PySide6.QtCore import QPoint, Qt
+
+    window = _loaded_navigation_window(qapp)
+    window.go_to_stage(previous_stage)
+    window.show()
+    qapp.processEvents()
+    assert not window._radiation_is_current()
+
+    QTest.mouseClick(window.stage_frames["radiation"], Qt.LeftButton, pos=QPoint(30, 10))
+
+    assert window.current_stage == "radiation"
+    assert window._radiation_is_current()
+    assert len(window.radiation_points) == 8
+    assert all(name in window._radiation_pixel_values for name in ("top", "bottom", "left", "right"))
+    window.close()
 
 
 def test_step_navigation_preserves_fields_cursors_and_completion(qapp, isolated_settings):

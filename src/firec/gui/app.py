@@ -191,6 +191,7 @@ class MainWindow(QMainWindow):
         self._last_profile_lines: dict[str, tuple[Point, Point]] = {}
         self._profile_display_markers: dict[str, tuple[np.ndarray | None, float | None, tuple[float, float] | None]] = {}
         self._auto_detection_failures: dict[str, str] = {}
+        self._radiation_pixel_values: dict[str, float] = {}
         self.radiation_profile_mode = "auto"
         self.radiation_profile_distance_mm = 40.0
         self.manual_radiation_profile_lines: dict[str, float] | None = None
@@ -400,7 +401,10 @@ class MainWindow(QMainWindow):
 
         def select_frame(event) -> None:
             if event.button() == Qt.LeftButton:
-                self.go_to_stage(stage)
+                if stage == "radiation" and self.image is not None:
+                    self.detect_radiation_field()
+                else:
+                    self.go_to_stage(stage)
             event.accept()
 
         frame.mousePressEvent = select_frame
@@ -706,21 +710,26 @@ class MainWindow(QMainWindow):
         settings_layout.addWidget(
             _tooltip_label(
                 "照射野画素値平均範囲",
-                "照射野中心からこの距離内の画素値を平均して、\n照射野の画素値とします。\nラインプロファイル上では緑線の間の平均値です。",
+                "レーザー中心からこの距離内の画素値を平均して、\n照射野の画素値とします。\nラインプロファイル上の薄い緑の範囲の平均値です。",
             ),
             2,
             0,
         )
         settings_layout.addWidget(self.radiation_center_spin, 2, 1)
+        self.radiation_pixel_value_label = QLabel()
+        self.radiation_pixel_value_label.setToolTip("各プロファイルの平滑化後の平均画素値です。\n計算値が得られていない場合は — を表示します。")
+        self._update_radiation_pixel_value_label()
+        settings_layout.addWidget(QLabel("照射野画素値"), 3, 0)
+        settings_layout.addWidget(self.radiation_pixel_value_label, 3, 1)
         settings_layout.addWidget(
             _tooltip_label(
                 "smoothed px",
                 "ラインプロファイルのスムージングに使うピクセル数です。",
             ),
-            3,
+            4,
             0,
         )
-        settings_layout.addWidget(self.smoothing_window_spin, 3, 1)
+        settings_layout.addWidget(self.smoothing_window_spin, 4, 1)
 
         auto_page = QGroupBox("auto")
         auto_layout = QVBoxLayout()
@@ -792,14 +801,16 @@ class MainWindow(QMainWindow):
         profile_toggle_layout.addWidget(self.smoothed_profile_check)
         profile_toggle_layout.addStretch(1)
         layout.addLayout(profile_toggle_layout)
-        layout.addWidget(reset_button)
 
         frame = _frame("照射野")
         self.detect_button = _button("照射野を検出")
         self.detect_button.setProperty("primary", True)
         self.detect_button.clicked.connect(self.detect_radiation_field)
         self.detect_button.setToolTip("現在の基準点と設定で照射野を検出します。\n光照射野の調整内容は保持します。")
-        layout.addWidget(self.detect_button)
+        action_row = QHBoxLayout()
+        action_row.addWidget(reset_button)
+        action_row.addWidget(self.detect_button)
+        layout.addLayout(action_row)
         frame.setLayout(layout)
         frame.mousePressEvent = lambda event: self.go_to_stage("radiation")
         return frame, [
@@ -1103,6 +1114,8 @@ class MainWindow(QMainWindow):
             self._last_profile_lines = {}
             self._profile_display_markers = {}
             self._auto_detection_failures = {}
+            self._radiation_pixel_values = {}
+            self._update_radiation_pixel_value_label()
             self.radiation_profile_mode = "auto"
             self.manual_radiation_profile_lines = None
             self._manual_radiation_profile_dirty = False
@@ -1556,6 +1569,8 @@ class MainWindow(QMainWindow):
         self.manually_adjusted_radiation_cursors = set()
         self._profile_display_markers = {}
         self._auto_detection_failures = {}
+        self._radiation_pixel_values = {}
+        self._update_radiation_pixel_value_label()
         self.manual_radiation_profile_lines = None
         self._manual_radiation_profile_dirty = False
         self.view.set_radiation_points(self.radiation_points)
@@ -1921,8 +1936,6 @@ class MainWindow(QMainWindow):
             line = lines.get(line_name)
             if point_names is None or line is None:
                 continue
-            if all(name in self.manually_adjusted_radiation_cursors for name in point_names):
-                continue
             raw_values = None
             try:
                 raw_values = line_profile(self.image, line[0], line[1])
@@ -1942,6 +1955,7 @@ class MainWindow(QMainWindow):
                     center_position=center.x if line_name in ("top", "bottom") else center.y,
                 )
             except ValueError as error:
+                self._radiation_pixel_values.pop(line_name, None)
                 self._auto_detection_failures[line_name] = str(error)
                 self._profile_display_markers[line_name] = self._profile_markers_without_detection(raw_values)
                 for point_name in point_names:
@@ -1951,6 +1965,7 @@ class MainWindow(QMainWindow):
                 continue
 
             max_raw = float(np.max(raw_values)) if raw_values.size else 0.0
+            self._radiation_pixel_values[line_name] = detection.radiation_pixel_value
             self._profile_display_markers[line_name] = (
                 max_raw - detection.smoothed_values,
                 max_raw - detection.threshold_pixel_value,
@@ -1964,7 +1979,17 @@ class MainWindow(QMainWindow):
                         self.profile_cursors[point_name] = position
             finally:
                 self._auto_updating_profile_cursor = False
+        self._update_radiation_pixel_value_label()
         self._update_radiation_auto_status()
+
+    def _update_radiation_pixel_value_label(self) -> None:
+        values = {
+            name: f"{self._radiation_pixel_values[name]:.1f}" if name in self._radiation_pixel_values else "—"
+            for name in ("top", "bottom", "left", "right")
+        }
+        self.radiation_pixel_value_label.setText(
+            f"上: {values['top']}　下: {values['bottom']}\n左: {values['left']}　右: {values['right']}"
+        )
 
     def _profile_markers_without_detection(self, raw_values: np.ndarray | None) -> tuple[np.ndarray | None, float | None, tuple[float, float] | None]:
         if raw_values is None:
