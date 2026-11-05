@@ -372,7 +372,7 @@ class ImageView(QGraphicsView):
             self.setCursor(Qt.OpenHandCursor)
         elif mode == "zoom":
             self.setCursor(self._zoom_cursor)
-        elif mode is None:
+        elif mode is None and not (self.active_field == "laser" and self.editing_enabled):
             self.setCursor(Qt.ArrowCursor)
         else:
             self.setCursor(Qt.CrossCursor)
@@ -554,12 +554,14 @@ class ImageView(QGraphicsView):
 
     def set_editing_enabled(self, enabled: bool) -> None:
         self.editing_enabled = enabled
+        self._apply_tool_cursor()
         self._draw_selection_overlays()
 
     def set_active_field(self, field: str) -> None:
         if field not in ("laser", "radiation", "light"):
             raise ValueError(f"Unknown field: {field}")
         self.active_field = field
+        self._apply_tool_cursor()
         if self.selected_target not in EDGE_NAMES:
             self.selected_target = "top"
         self._sync_item_visibility()
@@ -664,6 +666,10 @@ class ImageView(QGraphicsView):
         else:
             self._drag_mode = None
             self._drag_edge = None
+            if self.editing_enabled and self.active_field == "laser" and self._image_shape is not None:
+                height, width = self._image_shape
+                if 0 <= scene_pos.x() < width and 0 <= scene_pos.y() < height:
+                    self.set_profile_line_positions(left_x=scene_pos.x(), bottom_y=scene_pos.y())
         event.accept()
 
     def mouseMoveEvent(self, event) -> None:

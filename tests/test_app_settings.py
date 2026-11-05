@@ -917,6 +917,38 @@ def _loaded_navigation_window(qapp):
     return window
 
 
+def test_laser_center_can_be_placed_by_click_then_adjusted_by_drag(qapp, isolated_settings):
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    window = _loaded_navigation_window(qapp)
+    window.go_to_stage("laser")
+    window.show()
+    qapp.processEvents()
+    view = window.view
+    height, width = window.image.shape
+    for fraction in (0.7, 0.3):
+        position = view.mapFromScene(width * fraction, height * fraction)
+        expected = view.mapToScene(position)
+        QTest.mouseClick(view.viewport(), Qt.LeftButton, pos=position)
+        assert window.laser_center.x == pytest.approx(expected.x())
+        assert window.laser_center.y == pytest.approx(expected.y())
+        assert window.profile_cursors["laser_x"] == pytest.approx(expected.x())
+        assert window.profile_cursors["laser_y"] == pytest.approx(expected.y())
+    center = window.laser_center
+    start = view.mapFromScene(center.x, center.y + height * 0.2)
+    end = start + type(start)(20, 0)
+    for kind, position, button, buttons in (
+        (QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton),
+        (QEvent.MouseMove, end, Qt.NoButton, Qt.LeftButton),
+        (QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton),
+    ):
+        qapp.sendEvent(view.viewport(), QMouseEvent(kind, QPointF(position), QPointF(position), button, buttons, Qt.NoModifier))
+    assert window.laser_center.x > center.x
+    assert window.laser_center.y == center.y
+    window.close()
+
+
 @pytest.mark.parametrize("previous_stage", ["laser", "radiation", "result"])
 def test_selecting_radiation_frame_runs_detection(qapp, isolated_settings, previous_stage):
     from PySide6.QtCore import QPoint, Qt
