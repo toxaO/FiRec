@@ -704,7 +704,7 @@ def test_operation_help_changes_do_not_resize_image(qapp, isolated_settings):
 
 
 @pytest.mark.parametrize("source", ["button", "ctrl_left", "ctrl_right"])
-def test_radial_zoom_from_tool_and_mac_control_click(qapp, source):
+def test_vertical_zoom_from_tool_and_mac_control_click(qapp, source):
     import sys
     from PySide6.QtCore import QEvent, QPointF, Qt
     from PySide6.QtGui import QMouseEvent
@@ -729,13 +729,54 @@ def test_radial_zoom_from_tool_and_mac_control_click(qapp, source):
         ):
             qapp.sendEvent(view.viewport(), QMouseEvent(kind, QPointF(*position), QPointF(*position), changed, held, modifier))
 
-    # Horizontal movement must zoom, including at the initial fitted scale.
+    # Only vertical movement changes zoom, including at the initial fitted scale.
     before = view.transform().m11()
     drag((400, 250), (350, 250))
+    assert view.transform().m11() == before
+    drag((400, 250), (400, 200))
     assert view.transform().m11() > before
     before = view.transform().m11()
-    drag((350, 250), (400, 250))
+    drag((400, 200), (400, 250))
     assert view.transform().m11() < before
+    view.reset_view()
+    start = QPointF(400, 250)
+    anchor = view.mapToScene(start.toPoint())
+    qapp.sendEvent(view.viewport(), QMouseEvent(
+        QEvent.MouseButtonPress, start, start, button, button, modifier,
+    ))
+    for y in (200, 150, 100):
+        before = view.transform().m11()
+        position = QPointF(400, y)
+        qapp.sendEvent(view.viewport(), QMouseEvent(
+            QEvent.MouseMove, position, position, Qt.NoButton, button, modifier,
+        ))
+        assert view.transform().m11() > before
+        assert (view.mapFromScene(anchor) - start.toPoint()).manhattanLength() <= 2
+    view.close()
+
+
+@pytest.mark.parametrize("smooth", [False, True])
+def test_scroll_zooms_at_cursor(qapp, smooth):
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QWheelEvent
+
+    view = ImageView()
+    view.resize(500, 500)
+    view.show()
+    qapp.processEvents()
+    view.set_image(np.zeros((1000, 1000), dtype=np.uint16))
+    position = QPoint(400, 180)
+    anchor = view.mapToScene(position)
+    for direction in (1, -1):
+        before = view.transform().m11()
+        event = QWheelEvent(
+            QPointF(position), QPointF(view.viewport().mapToGlobal(position)),
+            QPoint(0, 30 * direction if smooth else 0), QPoint(0, 120 * direction),
+            Qt.NoButton, Qt.NoModifier, Qt.ScrollUpdate, False,
+        )
+        qapp.sendEvent(view.viewport(), event)
+        assert (view.transform().m11() - before) * direction > 0
+        assert (view.mapFromScene(anchor) - position).manhattanLength() <= 2
     view.close()
 
 
@@ -805,13 +846,12 @@ def test_modifier_drags_pan_and_zoom_without_moving_profile_lines(qapp):
     assert view.profile_lines() == lines
     view.centerOn(500, 500)
     modifier = Qt.MetaModifier if sys.platform == "darwin" else Qt.ControlModifier
-    for outer, inner in (((400, 250), (350, 250)), ((100, 250), (150, 250)),
-                         ((250, 100), (250, 150)), ((250, 400), (250, 350))):
+    for lower, upper in (((250, 150), (250, 100)), ((250, 400), (250, 350))):
         original_scale = view.transform().m11()
-        drag(outer, inner, modifier)
+        drag(lower, upper, modifier)
         assert view.transform().m11() > original_scale
         before = view.transform().m11()
-        drag(inner, outer, modifier)
+        drag(upper, lower, modifier)
         assert view.transform().m11() < before
     assert view.profile_lines() == lines
     # The next unmodified drag edits the original line normally.

@@ -564,7 +564,7 @@ class MainWindow(QMainWindow):
 
     def _tool_frame(self) -> QWidget:
         self.pan_tool_button = _icon_tool_button("tools_hand.png", "移動：画像をドラッグして表示位置を調整します。\nショートカット：Shift＋ドラッグで一時的に移動。\nキーを離すと元のツールに戻ります。\nボタンの再クリックで解析操作へ戻ります。")
-        self.zoom_tool_button = _icon_tool_button("tools_loupe.png", "ズーム：画像中心方向へドラッグで拡大、外側へドラッグで縮小します。\nショートカット：Ctrl＋ドラッグでも同じ操作ができます。\nキーを離すと元のツールに戻ります。\nボタンの再クリックで解析操作へ戻ります。")
+        self.zoom_tool_button = _icon_tool_button("tools_loupe.png", "ズーム：上へドラッグすると拡大、下へドラッグすると縮小します。\nショートカット：Ctrl＋ドラッグでも同じ操作ができます。\nキーを離すと元のツールに戻ります。\nボタンの再クリックで解析操作へ戻ります。")
         self.circle_tool_button = _icon_tool_button("tools_circle.png", "円：中心からドラッグして円を描き、\n円内の平均画素値を測定します。")
         self.rect_tool_button = _icon_tool_button("tools_rect.png", "矩形：対角の角へドラッグして範囲を指定し、\n平均画素値を測定します。")
         self.ruler_tool_button = _icon_tool_button("tools_ruler.png", "定規：画像上の2点をクリックして距離を測定します。\n端点はドラッグで調整できます。")
@@ -625,7 +625,9 @@ class MainWindow(QMainWindow):
         self.tool_help_button.setToolTip(
             "画像の表示操作\n"
             "Shift＋ドラッグ：画像を移動します。\n"
-            "Ctrl＋ドラッグ：画像中心へ近づけると拡大、離すと縮小します。\n"
+            "Ctrl＋ドラッグ：上へドラッグすると拡大、下へドラッグすると縮小します。\n"
+            "ドラッグを始めた位置を固定して拡大・縮小します。\n"
+            "画像上でスクロール：カーソル位置を基準に、上で拡大、下で縮小します。\n"
             "キーを押している間は対応ツールが選択表示され、離すと元のツールに戻ります。\n"
             "ShiftとCtrlを同時に押した場合は拡大・縮小を優先します。\n"
             "ダブルクリック：表示位置と倍率をリセットします。解析内容は保持します。\n\n"

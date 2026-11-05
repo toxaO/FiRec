@@ -6,7 +6,7 @@ from math import hypot
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt
+from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, Qt
 from PySide6.QtGui import QBrush, QColor, QCursor, QFont, QImage, QKeyEvent, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import QFrame, QGraphicsItem, QGraphicsPixmapItem, QGraphicsPolygonItem, QGraphicsScene, QGraphicsView, QSizePolicy
 
@@ -125,8 +125,8 @@ class ImageView(QGraphicsView):
         self._roi_drag_mode: str | None = None
         self._roi_drag_anchor: QPointF | None = None
         self._roi_drag_offset: QPointF | None = None
-        self._zoom_drag_center: QPointF | None = None
-        self._zoom_radial_center: QPointF | None = None
+        self._zoom_anchor: QPointF | None = None
+        self._zoom_start_pos = QPointF()
         self.on_navigation_mode_changed: Callable[[], None] | None = None
         self.on_rect_changed: Callable[[str, RotatedRect], None] | None = None
         self.on_tab_navigation: Callable[[bool], None] | None = None
@@ -329,8 +329,7 @@ class ImageView(QGraphicsView):
             self._roi_drag_mode = None
             self._roi_drag_anchor = None
             self._roi_drag_offset = None
-            self._zoom_drag_center = None
-            self._zoom_radial_center = None
+            self._zoom_anchor = None
             if mode != "ruler":
                 self._ruler_pending_start = None
         self._tool_mode = mode
@@ -361,8 +360,7 @@ class ImageView(QGraphicsView):
             self._drag_mode = None
             self._last_scene_pos = None
             self._last_view_pos = None
-            self._zoom_drag_center = None
-            self._zoom_radial_center = None
+            self._zoom_anchor = None
         self.set_navigation_modifiers(Qt.NoModifier)
         self._apply_tool_cursor()
 
@@ -586,6 +584,7 @@ class ImageView(QGraphicsView):
     def reset_view(self) -> None:
         if self._pixmap_item is None:
             return
+        self.setSceneRect(QRectF())
         self.resetTransform()
         self.fitInView(self._pixmap_item, Qt.KeepAspectRatio)
         self._emit_visible_scene_rect_changed()
@@ -606,6 +605,21 @@ class ImageView(QGraphicsView):
 
     def wheelEvent(self, event) -> None:
         event.accept()
+        if self._pixmap_item is None:
+            return
+        position = event.position().toPoint()
+        anchor = self.mapToScene(position)
+        if not self._pixmap_item.sceneBoundingRect().contains(anchor):
+            return
+        pixel_delta = event.pixelDelta().y()
+        angle_delta = event.angleDelta().y()
+        if pixel_delta:
+            factor = pow(1.004, pixel_delta)
+        elif angle_delta:
+            factor = pow(1.1, angle_delta / 120)
+        else:
+            return
+        self._zoom_at_position(factor, position, anchor)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -1460,31 +1474,38 @@ class ImageView(QGraphicsView):
         self._drag_mode = "zoom"
         self._drag_edge = None
         self._last_view_pos = view_pos
-        self._zoom_drag_center = self.visible_scene_rect().center()
-        self._zoom_radial_center = (
-            QPointF(self.mapFromScene(self._pixmap_item.sceneBoundingRect().center()))
-            if self._pixmap_item is not None else None
-        )
+        if self._pixmap_item is None:
+            return
+        self._zoom_start_pos = view_pos
+        self._zoom_anchor = self.mapToScene(view_pos.toPoint())
 
     def _zoom_tool_move(self, view_pos: QPointF) -> bool:
-        if self._drag_mode != "zoom" or self._last_view_pos is None or self._zoom_drag_center is None or self._zoom_radial_center is None:
+        if self._drag_mode != "zoom" or self._last_view_pos is None or self._zoom_anchor is None:
             return False
-        distance_delta = self._point_distance(self._last_view_pos, self._zoom_radial_center) - self._point_distance(view_pos, self._zoom_radial_center)
+        distance_delta = self._last_view_pos.y() - view_pos.y()
         if distance_delta == 0:
             return True
-        factor = pow(1.004, distance_delta)
-        factor = max(0.5, min(2.0, factor))
-        self._zoom_by(factor, self._zoom_drag_center)
+        factor = max(0.5, min(2.0, pow(1.004, distance_delta)))
+        self._zoom_at_position(factor, self._zoom_start_pos.toPoint(), self._zoom_anchor)
         self._last_view_pos = view_pos
         return True
+
+    def _zoom_at_position(self, factor: float, position: QPoint, anchor: QPointF) -> None:
+        self.scale(factor, factor)
+        offset = anchor - self.mapToScene(position)
+        visible = self.visible_scene_rect().translated(offset)
+        # Allow the viewport to extend past the image so its edges cannot clamp the anchor.
+        margin = 2.0 / self.transform().m11()
+        self.setSceneRect(self.scene().sceneRect().united(visible.adjusted(-margin, -margin, margin, margin)))
+        self.centerOn(visible.center())
+        self._emit_visible_scene_rect_changed()
 
     def _zoom_tool_release(self, scene_pos: QPointF) -> bool:
         if self._drag_mode != "zoom":
             return False
         self._drag_mode = None
         self._last_view_pos = None
-        self._zoom_drag_center = None
-        self._zoom_radial_center = None
+        self._zoom_anchor = None
         self._apply_tool_cursor()
         return True
 
