@@ -88,6 +88,7 @@ QPushButton:disabled { background: #e9eef1; border-color: #dce5eb; color: #85949
 QToolButton { border: 1px solid transparent; border-radius: 4px; padding: 3px; }
 QToolButton:hover, QToolButton:checked { background: #e1eff2; border-color: #a8ced6; }
 QLabel[stageHeading="true"] { font-weight: 600; }
+QLabel[calculatedValues="true"] { background: #eef5f4; border-radius: 4px; padding: 8px 10px; }
 QToolButton[helpButton="true"], QToolButton[helpButton="true"]:hover,
 QToolButton[helpButton="true"]:pressed { background: transparent; border-color: transparent; }
 QToolButton[imageTool="true"] { background: #ffffff; border: 1px solid #b9cbd5; }

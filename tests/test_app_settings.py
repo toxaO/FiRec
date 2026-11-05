@@ -204,8 +204,8 @@ def test_analyse_parameter_labels_show_hover_help(qapp, isolated_settings):
     )
     assert "黄色線" in _find_label(window, "閾値").toolTip().replace("\n", "")
     assert "薄い緑の範囲" in _find_label(window, "照射野画素値平均範囲").toolTip().replace("\n", "")
-    assert "スムージング" in _find_label(window, "smoothed px").toolTip().replace("\n", "")
-    assert "距離" in _find_label(window, "レーザー中心からのoffset").toolTip().replace("\n", "")
+    assert "スムージング" in _find_label(window, "平滑化").toolTip().replace("\n", "")
+    assert "距離" in _find_label(window, "中心からのoffset").toolTip().replace("\n", "")
     assert window.radiation_profile_auto_radio.toolTip().replace("\n", "") == "レーザー中心から一定距離に 4 本のラインプロファイル線を自動配置します。"
     assert window.radiation_profile_manual_radio.toolTip().replace("\n", "") == "ラインプロファイル線を直接ドラッグして位置を決めます。"
     assert window.raw_profile_check.toolTip().replace("\n", "") == "ラインプロファイルを表示します。"
@@ -743,6 +743,32 @@ def test_radiation_stage_keeps_profile_visibility_toggles(qapp, isolated_setting
     assert window.bottom_profile_plot.smoothed_profile_visible is False
 
 
+@pytest.mark.parametrize("panel_width", [360, 460])
+def test_radiation_layout_stays_stable_when_switching_modes(qapp, isolated_settings, panel_width):
+    window = _loaded_navigation_window(qapp)
+    window.show()
+    window.analysis_splitter.widget(1).setFixedWidth(panel_width)
+    qapp.processEvents()
+    window._set_radiation_profile_mode("auto")
+    qapp.processEvents()
+    frame = window.stage_frames["radiation"]
+    controls = (window.film_pixel_spin, window.baseline_roi_button, window.radiation_threshold_spin,
+                window.smoothing_window_spin, window.radiation_center_spin, window.detect_button)
+    original = [control.mapTo(frame, control.rect().topLeft()) for control in controls]
+    original_size = frame.size()
+    for mode in ("manual", "auto", "manual", "auto"):
+        window._set_radiation_profile_mode(mode)
+        qapp.processEvents()
+        assert frame.size() == original_size
+        assert [control.mapTo(frame, control.rect().topLeft()) for control in controls] == original
+    button = window.baseline_roi_button
+    assert button.text() == "ROIの値を挿入"
+    assert button.width() >= button.sizeHint().width()
+    assert button.x() + button.width() <= frame.width()
+    assert not any("境界点:" in label.text() for label in frame.findChildren(QLabel))
+    window.close()
+
+
 def _loaded_navigation_window(qapp):
     window = _make_window(qapp)
     window.load_path(Path(__file__).parents[1] / "sample" / "sample.tif")
@@ -795,6 +821,7 @@ def test_frame_click_selects_without_scrolling_or_moving_cards(qapp, isolated_se
     window.analysis_scroll.verticalScrollBar().setValue(40)
     window.path_edit.setFocus()
     qapp.processEvents()
+    assert window.path_edit.hasFocus()
     scroll = window.analysis_scroll.verticalScrollBar().value()
     geometry = {key: frame.geometry() for key, frame in window.stage_frames.items()}
     QTest.mouseClick(window.stage_frames["light"], Qt.LeftButton, pos=QPoint(2, 2))

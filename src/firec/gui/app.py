@@ -275,9 +275,6 @@ class MainWindow(QMainWindow):
         self.image_info_label.setWordWrap(False)
 
         self._build_layout()
-        # Japanese and numeric status strings can otherwise have different
-        # font fallback heights and move the cards below them on selection.
-        self.radiation_status_label.setMinimumHeight(self.radiation_status_label.sizeHint().height())
         self.next_stage_shortcut = QShortcut(QKeySequence("Ctrl+PgDown"), self)
         self.previous_stage_shortcut = QShortcut(QKeySequence("Ctrl+PgUp"), self)
         self.next_stage_shortcut.activated.connect(lambda: self.move_stage(False))
@@ -344,6 +341,7 @@ class MainWindow(QMainWindow):
         side_scroll.setWidgetResizable(True)
         side_scroll.setMinimumWidth(360)
         side_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        side_scroll.setFocusPolicy(Qt.NoFocus)
 
         side_container_layout.addWidget(side_scroll, 1)
 
@@ -627,7 +625,6 @@ class MainWindow(QMainWindow):
         return frame, [reset_button]
 
     def _radiation_frame(self) -> tuple[QGroupBox, list[QWidget]]:
-        self.radiation_status_label = QLabel("照射野境界点を設定してください。")
         reset_button = _button("リセット")
         reset_button.clicked.connect(self.reset_radiation_field)
         reset_button.setToolTip("照射野の境界点と、それに続く光照射野の設定をリセットします。")
@@ -657,6 +654,7 @@ class MainWindow(QMainWindow):
         self.smoothing_window_spin.setRange(1, 501)
         self.smoothing_window_spin.setSingleStep(2)
         self.smoothing_window_spin.setValue(5)
+        self.smoothing_window_spin.setSuffix(" px")
         self.smoothing_window_spin.valueChanged.connect(lambda value: self._on_radiation_setting_changed())
         self._wire_spinbox_commit(self.smoothing_window_spin, self._on_radiation_setting_changed)
 
@@ -678,7 +676,7 @@ class MainWindow(QMainWindow):
         self.radiation_profile_distance_spin.setDecimals(1)
         self.radiation_profile_distance_spin.setSingleStep(1.0)
         self.radiation_profile_distance_spin.setSuffix(" mm")
-        self.radiation_profile_distance_spin.setMaximumWidth(120)
+        self.radiation_profile_distance_spin.setFixedWidth(120)
         self.radiation_profile_distance_spin.setValue(40.0)
         self.radiation_profile_distance_spin.valueChanged.connect(
             lambda value: self._on_radiation_profile_distance_changed()
@@ -689,6 +687,11 @@ class MainWindow(QMainWindow):
         )
 
         settings_layout = QGridLayout()
+        settings_layout.setHorizontalSpacing(10)
+        settings_layout.setVerticalSpacing(6)
+        settings_layout.setColumnStretch(0, 1)
+        for spin in (self.radiation_threshold_spin, self.smoothing_window_spin, self.radiation_center_spin):
+            spin.setFixedWidth(120)
         settings_layout.addWidget(
             _tooltip_label(
                 "ベース画素値",
@@ -696,89 +699,79 @@ class MainWindow(QMainWindow):
             ),
             0,
             0,
+            1,
+            2,
         )
-        self.baseline_roi_button = _button("ROIで設定")
+        self.baseline_roi_button = QPushButton("ROIの値を挿入")
+        self.baseline_roi_button.setFocusPolicy(Qt.NoFocus)
+        self.baseline_roi_button.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         self.baseline_roi_button.setToolTip("円形・矩形ツールで測定したROIの平均画素値を、ベース画素値に挿入します。")
         self.baseline_roi_button.clicked.connect(self._set_baseline_from_roi)
         baseline_row = QHBoxLayout()
+        baseline_row.setSpacing(6)
         baseline_row.addWidget(self.film_pixel_spin, 1)
         baseline_row.addWidget(self.baseline_roi_button)
-        settings_layout.addLayout(baseline_row, 0, 1)
+        settings_layout.addLayout(baseline_row, 1, 0, 1, 2)
         settings_layout.addWidget(
             _tooltip_label(
                 "閾値",
                 "ベース画素値と照射野画素値の間の何％を照射野境界とするかを決めます。ラインプロファイル上では黄色線です。",
             ),
-            1,
+            2,
             0,
         )
-        settings_layout.addWidget(self.radiation_threshold_spin, 1, 1)
+        settings_layout.addWidget(self.radiation_threshold_spin, 2, 1)
+        settings_layout.addWidget(
+            _tooltip_label("平滑化", "ラインプロファイルのスムージングに使うピクセル数です。"),
+            3, 0,
+        )
+        settings_layout.addWidget(self.smoothing_window_spin, 3, 1)
         settings_layout.addWidget(
             _tooltip_label(
                 "照射野画素値平均範囲",
                 "レーザー中心からこの距離内の画素値を平均して、\n照射野の画素値とします。\nラインプロファイル上の薄い緑の範囲の平均値です。",
             ),
-            2,
-            0,
-        )
-        settings_layout.addWidget(self.radiation_center_spin, 2, 1)
-        self.radiation_pixel_value_label = QLabel()
-        self.radiation_pixel_value_label.setToolTip("各プロファイルの平滑化後の平均画素値です。\n計算値が得られていない場合は — を表示します。")
-        self._update_radiation_pixel_value_label()
-        settings_layout.addWidget(QLabel("照射野画素値"), 3, 0)
-        settings_layout.addWidget(self.radiation_pixel_value_label, 3, 1)
-        settings_layout.addWidget(
-            _tooltip_label(
-                "smoothed px",
-                "ラインプロファイルのスムージングに使うピクセル数です。",
-            ),
             4,
             0,
         )
-        settings_layout.addWidget(self.smoothing_window_spin, 4, 1)
+        settings_layout.addWidget(self.radiation_center_spin, 4, 1)
+        self.radiation_pixel_value_label = QLabel()
+        self.radiation_pixel_value_label.setToolTip("各プロファイルの平滑化後の平均画素値です。\n計算値が得られていない場合は — を表示します。")
+        self.radiation_pixel_value_label.setProperty("calculatedValues", True)
+        self._update_radiation_pixel_value_label()
+        settings_layout.addWidget(self.radiation_pixel_value_label, 5, 0, 1, 2)
 
-        auto_page = QGroupBox("auto")
-        auto_layout = QVBoxLayout()
-        auto_layout.setContentsMargins(6, 6, 6, 6)
-        auto_layout.setSpacing(4)
-        # auto_hint = QLabel("レーザー中心から同じ mm オフセットに4本のプロファイル線を配置します。")
-        # auto_hint.setWordWrap(True)
+        auto_page = QWidget()
         auto_row = QHBoxLayout()
         auto_row.setContentsMargins(0, 0, 0, 0)
         auto_row.setSpacing(4)
         auto_row.addWidget(
             _tooltip_label(
-                "レーザー中心からのoffset",
+                "中心からのoffset",
                 "レーザー中心とラインプロファイル線の距離です。",
             )
         )
-        auto_row.addWidget(self.radiation_profile_distance_spin)
         auto_row.addStretch(1)
-        # auto_layout.addWidget(auto_hint)
-        auto_layout.addLayout(auto_row)
-        auto_page.setLayout(auto_layout)
+        auto_row.addWidget(self.radiation_profile_distance_spin)
+        auto_page.setLayout(auto_row)
 
-        manual_page = QGroupBox("manual")
-        manual_layout = QVBoxLayout()
-        manual_layout.setContentsMargins(6, 6, 6, 6)
-        manual_layout.setSpacing(4)
-        manual_hint = _tooltip_label("ラインプロファイル線を直接ドラッグして位置を決めます。", "ラインプロファイル線を直接ドラッグして位置を決めます。")
-        manual_hint.setWordWrap(True)
-        manual_reset_button = _button("リセット")
+        manual_page = QWidget()
+        manual_hint = _tooltip_label("画像上の線をドラッグ", "ラインプロファイル線を直接ドラッグして位置を決めます。")
+        manual_reset_button = _button("配置を戻す")
         manual_reset_button.setToolTip("手動配置した4本のプロファイル線を、自動配置の位置へ戻します。")
         manual_reset_button.clicked.connect(self.reset_radiation_profile_lines)
         manual_row = QHBoxLayout()
         manual_row.setContentsMargins(0, 0, 0, 0)
         manual_row.setSpacing(4)
+        manual_row.addWidget(manual_hint)
         manual_row.addStretch(1)
         manual_row.addWidget(manual_reset_button)
-        manual_layout.addWidget(manual_hint)
-        manual_layout.addLayout(manual_row)
-        manual_page.setLayout(manual_layout)
+        manual_page.setLayout(manual_row)
 
         profile_mode_row = QHBoxLayout()
         profile_mode_row.setContentsMargins(0, 0, 0, 0)
         profile_mode_row.setSpacing(8)
+        profile_mode_row.addWidget(QLabel("取得位置"))
         self.radiation_profile_auto_radio.setToolTip("レーザー中心から一定距離に 4 本のラインプロファイル線を自動配置します。")
         self.radiation_profile_manual_radio.setToolTip("ラインプロファイル線を直接ドラッグして位置を決めます。")
         profile_mode_row.addWidget(self.radiation_profile_auto_radio)
@@ -788,6 +781,7 @@ class MainWindow(QMainWindow):
         profile_mode_stack = QStackedWidget()
         profile_mode_stack.addWidget(auto_page)
         profile_mode_stack.addWidget(manual_page)
+        profile_mode_stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.radiation_profile_mode_stack = profile_mode_stack
 
         self.raw_profile_check.setChecked(True)
@@ -798,11 +792,11 @@ class MainWindow(QMainWindow):
         self.smoothed_profile_check.toggled.connect(lambda visible: self._on_profile_visibility_changed())
 
         layout = QVBoxLayout()
-        layout.addWidget(self.radiation_status_label)
         layout.addLayout(profile_mode_row)
         layout.addWidget(profile_mode_stack)
         layout.addLayout(settings_layout)
         profile_toggle_layout = QHBoxLayout()
+        profile_toggle_layout.addWidget(QLabel("表示"))
         profile_toggle_layout.addWidget(self.raw_profile_check)
         profile_toggle_layout.addWidget(self.smoothed_profile_check)
         profile_toggle_layout.addStretch(1)
@@ -2207,15 +2201,9 @@ class MainWindow(QMainWindow):
         self.view.set_profile_line_positions(bottom_y=y, left_x=x)
 
     def _sync_radiation_step_ui(self) -> None:
-        if not hasattr(self, "radiation_status_label"):
+        if not hasattr(self, "radiation_profile_mode_stack"):
             return
         self._update_profile_visibility()
-        if self._auto_detection_failures:
-            names = ", ".join(sorted(self._auto_detection_failures))
-            self.radiation_status_label.setText(f"自動検出に失敗しました: {names}")
-        else:
-            count = sum(1 for point_names in PROFILE_POINT_NAMES.values() for name in point_names if name in self.profile_cursors)
-            self.radiation_status_label.setText(f"照射野境界点: {count}/8")
         if self.current_stage != "radiation":
             if self.current_stage != "laser":
                 for plot in self.profile_plots.values():
