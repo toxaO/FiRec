@@ -531,13 +531,13 @@ class MainWindow(QMainWindow):
             lambda: self._set_analyse_dpi_mode(self.calibration_method.currentData()))
         layout = QVBoxLayout()
         row = QHBoxLayout()
-        self.dpi_label = _tooltip_label("解像度", "DPIまたはmm/pxで校正値を入力します。\nTIFFタグはDPIへ換算して表示します。\n未校正はpxで評価します。")
-        row.addWidget(self.dpi_label)
         row.addWidget(self.calibration_method)
-        row.addWidget(self.pixel_length)
-        row.addWidget(self.dpi_input)
+        row.addWidget(self.pixel_length, 1)
+        row.addWidget(self.dpi_input, 1)
         self.spacing_unit_label = QLabel("mm/px")
         row.addWidget(self.spacing_unit_label)
+        self.calibration_inline_label = QLabel()
+        row.addWidget(self.calibration_inline_label, 1)
         layout.addLayout(row)
         self.calibration_label = QLabel()
         self.calibration_label.setWordWrap(True)
@@ -677,14 +677,16 @@ class MainWindow(QMainWindow):
         return frame
 
     def _laser_frame(self) -> tuple[QGroupBox, list[QWidget]]:
-        self.laser_status_label = QLabel("レーザー中心を設定してください。")
+        self.laser_status_label = QLabel("未設定")
         reset_button = _button("リセット")
         reset_button.clicked.connect(self.reset_laser_center)
         reset_button.setToolTip("レーザー中心の指定を解除します。")
 
         layout = QVBoxLayout()
-        layout.addWidget(self.laser_status_label)
-        layout.addWidget(reset_button)
+        row = QHBoxLayout()
+        row.addWidget(self.laser_status_label, 1)
+        row.addWidget(reset_button)
+        layout.addLayout(row)
 
         frame = _frame("レーザー中心")
         frame.setLayout(layout)
@@ -901,11 +903,12 @@ class MainWindow(QMainWindow):
         reset_button.setToolTip("照射野がある場合はその境界へ戻します。\nまだ照射野がない場合は画像中央の矩形へ戻します。")
 
         layout = QVBoxLayout()
-        light_hint = QLabel("光照射野境界を直接ドラッグして位置を決めます。")
+        light_hint = QLabel("境界をドラッグして調整")
         light_hint.setWordWrap(True)
-        layout.addWidget(light_hint)
-        layout.addWidget(reset_button)
-        layout.addStretch(1)
+        row = QHBoxLayout()
+        row.addWidget(light_hint, 1)
+        row.addWidget(reset_button)
+        layout.addLayout(row)
 
         frame = _frame("光照射野")
         frame.setLayout(layout)
@@ -919,19 +922,16 @@ class MainWindow(QMainWindow):
         save_button.setToolTip("現在の照射野・光照射野の解析結果を記録に保存します。")
         save_button.clicked.connect(self.save_current_result)
 
-        self.origin_combo.addItem("起点: レーザー", "laser")
-        self.origin_combo.addItem("起点: 照射野", "radiation")
-        self.origin_combo.addItem("起点: 光照射野", "light")
+        self.origin_combo.addItem("レーザー", "laser")
+        self.origin_combo.addItem("照射野", "radiation")
+        self.origin_combo.addItem("光照射野", "light")
         self.origin_combo.currentIndexChanged.connect(lambda index: self._on_result_origin_changed())
-
-        controls = QHBoxLayout()
-        controls.addStretch(1)
-        controls.addWidget(save_button)
 
         layout = QVBoxLayout()
         origin_row = QHBoxLayout()
         origin_row.addWidget(_tooltip_label("起点", "結果の中心座標を表示・保存するときの起点を選びます。"))
         origin_row.addWidget(self.origin_combo, 1)
+        origin_row.addWidget(save_button)
         layout.addLayout(origin_row)
         self.result_validation_label = QLabel()
         self.result_validation_label.setWordWrap(True)
@@ -939,7 +939,6 @@ class MainWindow(QMainWindow):
         self.result_validation_label.hide()
         layout.addWidget(self.result_validation_label)
         layout.addWidget(self.result_tree)
-        layout.addLayout(controls)
 
         frame = _frame("結果")
         frame.setLayout(layout)
@@ -1289,12 +1288,18 @@ class MainWindow(QMainWindow):
         numeric = self.analyse_dpi_mode == "numeric"
         self.pixel_length.setEnabled(numeric)
         self.pixel_length.setVisible(numeric)
-        self.dpi_input.setVisible(self.analyse_dpi_mode in ("dpi", "none"))
+        self.dpi_input.setVisible(self.analyse_dpi_mode == "dpi")
         self.dpi_input.setEnabled(self.analyse_dpi_mode == "dpi")
         self.spacing_unit_label.setText("mm/px" if numeric else "DPI")
-        self.spacing_unit_label.setVisible(self.analyse_dpi_mode != "tag")
+        self.spacing_unit_label.setVisible(self.analyse_dpi_mode in ("dpi", "numeric"))
         dpi = self._effective_dpi()
-        self.calibration_label.setText(self._calibration_error() or (f"{dpi:.8g} DPI" if dpi > 0 else "未校正：pxで評価します"))
+        error = self._calibration_error()
+        summary = f"{dpi:.8g} DPI" if dpi > 0 else "pxで評価"
+        inline = self.analyse_dpi_mode in ("tag", "none") and not error
+        self.calibration_inline_label.setText(summary)
+        self.calibration_inline_label.setVisible(inline)
+        self.calibration_label.setText(error or summary)
+        self.calibration_label.setVisible(bool(error) or numeric)
         unit = " mm" if dpi > 0 else " px"
         self.radiation_center_spin.setSuffix(unit)
         self.radiation_profile_distance_spin.setSuffix(unit)
@@ -2064,10 +2069,10 @@ class MainWindow(QMainWindow):
 
     def _sync_operation_help(self) -> None:
         stage_help = {
-            "laser": "レーザー中心：画像上をクリックして中心を配置し、水平・垂直線のドラッグで微調整します。照射野のフレームをクリックして解析します。",
+            "laser": "レーザー中心：画像上をクリックして中心を配置します。\n水平・垂直線をドラッグして微調整し、照射野フレームをクリックして解析します。",
             "calibration": "解像度：DPI入力・TIFFタグ・mm/px入力から校正方法を選びます。",
-            "radiation": "照射野：検出ボタンで境界を求め、プロファイルの8点を確認・調整します。条件変更後は再検出してください。",
-            "light": "光照射野：画像上の辺や頂点をドラッグして境界を合わせます。必要な入力が揃うと結果が自動更新されます。",
+            "radiation": "照射野：検出ボタンを押し、プロファイルの境界点を確認・調整します。\n条件変更後は再検出してください。",
+            "light": "光照射野：画像上の辺や頂点をドラッグして境界を合わせます。\n必要な入力が揃うと結果が自動更新されます。",
             "result": "結果：起点と解析値を確認し、保存します。",
         }
         self.operation_help.setText(stage_help[self.current_stage])
@@ -2197,9 +2202,9 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "laser_status_label"):
             return
         if self.laser_center is None:
-            self.laser_status_label.setText("レーザー中心を設定してください。")
+            self.laser_status_label.setText("未設定")
         else:
-            self.laser_status_label.setText(f"レーザー中心を設定: {_format_point(self.laser_center)}")
+            self.laser_status_label.setText(f"X {self.laser_center.x:.1f} / Y {self.laser_center.y:.1f}")
         if self.current_stage != "laser":
             return
         if "laser_x" not in self.profile_cursors or "laser_y" not in self.profile_cursors:
@@ -2432,6 +2437,7 @@ class MainWindow(QMainWindow):
         processed = not errors
         self.result_validation_label.setText("結果の処理に必要な入力：\n" + "\n".join(errors))
         self.result_validation_label.setVisible(bool(errors))
+        self.result_tree.setVisible(processed)
         result = self._current_analysis_result() if processed else None
         if result is None:
             self._clear_result_tree()
