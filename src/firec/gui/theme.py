@@ -76,8 +76,18 @@ QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: top righ
                       border: 0; border-left: 1px solid #dce5eb; width: 24px; background: #eef4f7;
                       border-top-right-radius: 4px; border-bottom-right-radius: 4px; }
 QComboBox::down-arrow { image: url("@DOWN_ARROW@"); width: 12px; height: 8px; }
-QSpinBox::up-button, QSpinBox::down-button,
-QDoubleSpinBox::up-button, QDoubleSpinBox::down-button { width: 16px; }
+QDoubleSpinBox, QSpinBox { padding-right: 26px; }
+QDoubleSpinBox::up-button, QSpinBox::up-button, QDoubleSpinBox::down-button, QSpinBox::down-button {
+    subcontrol-origin: padding; width: 22px; border: 0;
+    border-left: 1px solid #cbd8e0; background: #eef4f7;
+}
+QDoubleSpinBox::up-button, QSpinBox::up-button { subcontrol-position: top right; border-top-right-radius: 4px; }
+QDoubleSpinBox::down-button, QSpinBox::down-button { subcontrol-position: bottom right; border-bottom-right-radius: 4px; }
+QDoubleSpinBox::up-button:hover, QSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover, QSpinBox::down-button:hover { background: #dbeaf0; }
+QDoubleSpinBox::up-arrow, QSpinBox::up-arrow { image: url("@UP_ARROW@"); width: 12px; height: 8px; }
+QDoubleSpinBox::down-arrow, QSpinBox::down-arrow { image: url("@DOWN_ARROW@"); width: 12px; height: 8px; }
+QDoubleSpinBox::up-arrow:disabled, QSpinBox::up-arrow:disabled, QDoubleSpinBox::down-arrow:disabled, QSpinBox::down-arrow:disabled,
+QDoubleSpinBox::up-arrow:off, QSpinBox::up-arrow:off, QDoubleSpinBox::down-arrow:off, QSpinBox::down-arrow:off { width: 8px; height: 5px; }
 QPushButton { background: #eef4f7; border: 1px solid #cbd8e0; border-radius: 5px;
               padding: 6px 10px; min-height: 20px; }
 QPushButton:hover { background: #e3eef3; border-color: #91b9c5; }
@@ -108,7 +118,9 @@ QLabel:disabled, QCheckBox:disabled, QRadioButton:disabled { color: #85949e; }
 QStatusBar { background: #eaf0f4; color: #647b89; }
 QStatusBar::item { border: 0; }
 QToolTip { background: #253b49; color: #ffffff; border: 0; padding: 5px; }
-""".replace("@DOWN_ARROW@", (Path(__file__).parent / "assets/icons/chevron_down.svg").as_posix())
+""".replace("@DOWN_ARROW@", (Path(__file__).parent / "assets/icons/chevron_down.svg").as_posix()).replace(
+    "@UP_ARROW@", (Path(__file__).parent / "assets/icons/chevron_up.svg").as_posix()
+)
 
 GROUP_STYLE = """
 QGroupBox { background: #ffffff; border: 1px solid #dce5eb; border-radius: 7px;
