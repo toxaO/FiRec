@@ -5,7 +5,7 @@ from math import atan2, degrees, hypot, isfinite
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QEvent, QSettings, QSize, Qt
+from PySide6.QtCore import QEvent, QSettings, QSignalBlocker, QSize, Qt
 from PySide6.QtGui import QIcon, QKeySequence, QShortcut, QWheelEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -214,6 +214,7 @@ class MainWindow(QMainWindow):
         self.view.on_circle_roi_changed = self._on_circle_roi_changed
         self.view.on_rect_roi_changed = self._on_rect_roi_changed
         self.view.on_ruler_changed = self._on_ruler_changed
+        self.view.on_ruler_completed = self._on_ruler_completed
 
         self.main_tabs = QTabWidget()
         self.main_tabs.currentChanged.connect(self._on_main_tab_changed)
@@ -588,7 +589,14 @@ class MainWindow(QMainWindow):
         )
         self.circle_tool_button = _icon_tool_button("tools_circle.png", "円：中心からドラッグして円を描き、\n円内の平均画素値を測定します。")
         self.rect_tool_button = _icon_tool_button("tools_rect.png", "矩形：対角の角へドラッグして範囲を指定し、\n平均画素値を測定します。")
-        self.ruler_tool_button = _icon_tool_button("tools_ruler.png", "定規：画像上の2点をクリックして距離を測定します。\n端点はドラッグで調整できます。")
+        self.ruler_tool_button = _icon_tool_button("tools_ruler.png", "定規：画像上の2点をクリックして距離を測定します。\n端点はドラッグで調整できます。既知の長さから解像度を求めるには「校正」を押します。")
+        self.ruler_calibrate_button = _button("校正")
+        self.ruler_calibrate_button.setToolTip("既知の長さと画像上の2点から解像度を求めます。")
+        self.ruler_calibrate_button.clicked.connect(self._begin_ruler_calibration)
+        calibration_button_policy = self.ruler_calibrate_button.sizePolicy()
+        calibration_button_policy.setRetainSizeWhenHidden(True)
+        self.ruler_calibrate_button.setSizePolicy(calibration_button_policy)
+        self.ruler_calibrate_button.hide()
         reset_button = _icon_tool_button(
             "tools_reset.png",
             "画像全体を表示：表示位置と倍率をリセットします。\n"
@@ -637,10 +645,7 @@ class MainWindow(QMainWindow):
             if button is self.circle_tool_button:
                 tool_row.addSpacing(12)
             tool_row.addWidget(button)
-        tool_row.addWidget(QLabel("結果"))
-        self.tool_result_label.setMinimumWidth(120)
-        self.tool_result_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        tool_row.addWidget(self.tool_result_label, 1)
+        tool_row.addStretch(1)
         tool_row.addWidget(self.display_toggle)
         self.tool_help_button = QToolButton()
         self.tool_help_button.setProperty("helpButton", True)
@@ -671,21 +676,58 @@ class MainWindow(QMainWindow):
 
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
+        layout.setSpacing(2)
         layout.addLayout(tool_row)
+        self.ruler_calibration_row = QWidget()
+        calibration_row = QHBoxLayout(self.ruler_calibration_row)
+        calibration_row.setContentsMargins(0, 0, 0, 0)
+        known_length_label = QLabel("既知の長さ (mm)")
+        self.ruler_known_length = QLineEdit()
+        self.ruler_known_length.setAccessibleName(known_length_label.text())
+        self.ruler_known_length.setPlaceholderText("例：10")
+        self.ruler_known_length.setMaximumWidth(100)
+        cancel_button = _button("キャンセル")
+        cancel_button.clicked.connect(self._cancel_ruler_calibration)
+        calibration_row.addWidget(known_length_label)
+        calibration_row.addWidget(self.ruler_known_length)
+        calibration_row.addWidget(cancel_button)
+        calibration_row.addStretch()
+        self.ruler_calibration_row.hide()
         self.operation_help = QLabel()
         self.operation_help.setWordWrap(True)
         self.operation_help.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         self.operation_help.setProperty("muted", True)
-        self.operation_help.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.operation_help.setProperty("analysisHelp", True)
+        self.operation_help.setMargin(4)
         self.operation_help_scroll = QScrollArea()
         self.operation_help_scroll.setWidget(self.operation_help)
         self.operation_help_scroll.setWidgetResizable(True)
         self.operation_help_scroll.setFrameShape(QFrame.NoFrame)
         self.operation_help_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.operation_help_scroll.setFocusPolicy(Qt.NoFocus)
-        self.operation_help_scroll.setFixedHeight(self.operation_help.fontMetrics().lineSpacing() * 2 + 8)
+        self.operation_help.ensurePolished()
+        self.operation_help_scroll.setFixedHeight(self.operation_help.fontMetrics().lineSpacing() * 2 + 14)
+
+        self.tool_hint = QLabel()
+        for label in (self.tool_hint, self.tool_result_label):
+            label.setWordWrap(True)
+            label.setProperty("muted", True)
+            label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        tool_message = QWidget()
+        tool_message_layout = QHBoxLayout(tool_message)
+        tool_message_layout.setContentsMargins(0, 0, 0, 0)
+        tool_message_layout.setSpacing(4)
+        self.tool_message = QStackedWidget()
+        self.tool_message.addWidget(self.tool_hint)
+        self.tool_message.addWidget(self.tool_result_label)
+        tool_message_layout.addWidget(self.tool_message, 1)
+        tool_message_layout.addWidget(self.ruler_calibrate_button, 0, Qt.AlignTop)
+        self.tool_hint.ensurePolished()
+        tool_message.setFixedHeight(max(self.tool_hint.fontMetrics().lineSpacing() * 2 + 4,
+                                        self.ruler_calibrate_button.sizeHint().height()))
+        layout.addWidget(tool_message)
         layout.addWidget(self.operation_help_scroll)
+        layout.addWidget(self.ruler_calibration_row)
 
         frame = _frame("画像ツール")
         frame.setLayout(layout)
@@ -1251,7 +1293,7 @@ class MainWindow(QMainWindow):
             if not self.settings.contains("radiation_film_baseline_px"):
                 self.film_pixel_spin.setValue(maximum)
             self.film_pixel_spin.blockSignals(False)
-        self.tool_result_label.setText("")
+        self._set_tool_result("")
 
     def _apply_default_dpi(self, path: Path) -> None:
         dpi = tiff_image_dpi(path)
@@ -2080,6 +2122,7 @@ class MainWindow(QMainWindow):
         self.tool_mode = mode
         self._sync_tool_buttons(mode)
         self.view.set_tool_mode(mode)
+        self.ruler_calibrate_button.setVisible(mode == "ruler")
         self._sync_navigation_tool_display()
 
     def _sync_operation_help(self) -> None:
@@ -2091,6 +2134,25 @@ class MainWindow(QMainWindow):
             "result": "結果：起点と解析値を確認し、保存します。",
         }
         self.operation_help.setText(stage_help[self.current_stage])
+        tool_hints = {
+            "zoom": "上へドラッグで拡大、下へドラッグで縮小",
+            "circle": "中心からドラッグして円を指定してください",
+            "rect": "対角の角へドラッグして矩形を指定してください",
+            "ruler": "画像上の2点をクリックして測定します。",
+        }
+        hint = tool_hints.get(self.tool_mode, "")
+        if not self.ruler_calibration_row.isHidden():
+            hint = "既知の長さをmmで入力し、画像上の対応する2点をクリックしてください。"
+        self.tool_hint.setText(hint)
+        self._sync_tool_message()
+
+    def _set_tool_result(self, text: str) -> None:
+        self.tool_result_label.setText(text)
+        self._sync_tool_message()
+
+    def _sync_tool_message(self) -> None:
+        show_result = self.tool_result_label.text() and self.ruler_calibration_row.isHidden()
+        self.tool_message.setCurrentWidget(self.tool_result_label if show_result else self.tool_hint)
 
     def _set_baseline_from_roi(self) -> None:
         if self.image is None:
@@ -2109,7 +2171,7 @@ class MainWindow(QMainWindow):
             self.status.showMessage("ROI内の平均画素値を取得できません。ROIの位置と大きさを確認してください。")
             return
         self.film_pixel_spin.setValue(value)
-        self.tool_result_label.setText(f"{label}: {self._format_measurement(value)}")
+        self._set_tool_result(f"{label}: {self._format_measurement(value)}")
 
     def _toggle_tool_mode(self, mode: str) -> None:
         self._set_tool_mode(None if self.tool_mode == mode else mode)
@@ -2132,10 +2194,11 @@ class MainWindow(QMainWindow):
         self.tool_button_group.setExclusive(True)
 
     def _clear_measurement_tool_state(self) -> None:
+        self._cancel_ruler_calibration()
         self.circle_roi = None
         self.rect_roi = None
         self.ruler_points = None
-        self.tool_result_label.setText("")
+        self._set_tool_result("")
         self.view.set_circle_roi(None)
         self.view.set_rect_roi(None)
         self.view.set_ruler_points(None)
@@ -2148,36 +2211,86 @@ class MainWindow(QMainWindow):
     def _on_circle_roi_changed(self, roi: tuple[Point, float] | None) -> None:
         self.circle_roi = roi
         if self.image is None or roi is None or self.tool_mode != "circle":
-            self.tool_result_label.setText("")
+            self._set_tool_result("")
             return
         try:
             value = circular_region_mean(self.image, roi[0], roi[1])
         except ValueError:
-            self.tool_result_label.setText("")
+            self._set_tool_result("")
             return
-        self.tool_result_label.setText(f"円: {self._format_measurement(value)}")
+        self._set_tool_result(f"円内の平均画素値：{self._format_measurement(value)}")
 
     def _on_rect_roi_changed(self, roi: tuple[Point, Point] | None) -> None:
         self.rect_roi = roi
         if self.image is None or roi is None or self.tool_mode != "rect":
-            self.tool_result_label.setText("")
+            self._set_tool_result("")
             return
         try:
             value = rectangular_region_mean(self.image, roi[0], roi[1])
         except ValueError:
-            self.tool_result_label.setText("")
+            self._set_tool_result("")
             return
-        self.tool_result_label.setText(f"矩形: {self._format_measurement(value)}")
+        self._set_tool_result(f"矩形: {self._format_measurement(value)}")
 
     def _on_ruler_changed(self, points: tuple[Point, Point] | None) -> None:
         self.ruler_points = points
         if self.image is None or points is None or self.tool_mode != "ruler":
-            self.tool_result_label.setText("")
+            self._set_tool_result("")
             return
         dpi = self._effective_dpi()
         length_px = hypot(points[1].x - points[0].x, points[1].y - points[0].y)
-        length_mm = length_px * 25.4 / dpi if dpi > 0 else length_px
-        self.tool_result_label.setText(f"定規: {self._format_measurement(length_mm, ' mm' if dpi > 0 else ' px')}")
+        result = self._format_measurement(length_px, " px")
+        if dpi > 0:
+            result += " / " + self._format_measurement(length_px * (25.4 / dpi), " mm")
+        self._set_tool_result(f"定規：{result}")
+
+    def _begin_ruler_calibration(self) -> None:
+        if self.image is None:
+            self.status.showMessage("先に画像を読み込んでください。")
+            return
+        self.view.set_ruler_points(None)
+        self.ruler_known_length.clear()
+        self.ruler_calibration_row.show()
+        self.ruler_known_length.setFocus()
+        self.status.clearMessage()
+        self._sync_operation_help()
+
+    def _cancel_ruler_calibration(self) -> None:
+        if self.ruler_calibration_row.isHidden():
+            return
+        self.ruler_calibration_row.hide()
+        self.view.set_ruler_points(None)
+        self.status.clearMessage()
+        self._sync_operation_help()
+
+    def _on_ruler_completed(self, points: tuple[Point, Point]) -> None:
+        if self.ruler_calibration_row.isHidden() or self.image is None:
+            return
+        start, end = points
+        height, width = self.image.shape[:2]
+        distance = hypot(end.x - start.x, end.y - start.y)
+        if distance == 0 or not all(0 <= p.x < width and 0 <= p.y < height for p in points):
+            self.view.set_ruler_points(None)
+            self.status.showMessage("画像内の異なる2点を指定してください。")
+            return
+        try:
+            spacing = float(self.ruler_known_length.text()) / distance
+            if not isfinite(spacing) or spacing <= 0 or not isfinite(25.4 / spacing):
+                raise ValueError()
+        except ValueError:
+            self.view.set_ruler_points(None)
+            self.status.showMessage("正の有限な既知の長さをmmで入力し、2点を指定し直してください。")
+            return
+
+        self.ruler_calibration_row.hide()
+        with QSignalBlocker(self.pixel_length):
+            self.pixel_length.setText(str(spacing))
+        if self.analyse_dpi_mode == "numeric":
+            self._on_dpi_changed()
+        else:
+            self._set_analyse_dpi_mode("numeric")
+        self._sync_operation_help()
+        self.status.showMessage(f"定規で校正しました（{spacing:.8g} mm/px）。")
 
     def _redetect_radiation_lines(self) -> None:
         if self.current_stage != "radiation" or self.image is None:

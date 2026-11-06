@@ -136,6 +136,7 @@ class ImageView(QGraphicsView):
         self.on_circle_roi_changed: Callable[[tuple[Point, float] | None], None] | None = None
         self.on_rect_roi_changed: Callable[[tuple[Point, Point] | None], None] | None = None
         self.on_ruler_changed: Callable[[tuple[Point, Point] | None], None] | None = None
+        self.on_ruler_completed: Callable[[tuple[Point, Point]], None] | None = None
 
         self.horizontalScrollBar().valueChanged.connect(lambda value: self._emit_visible_scene_rect_changed())
         self.verticalScrollBar().valueChanged.connect(lambda value: self._emit_visible_scene_rect_changed())
@@ -1443,11 +1444,14 @@ class ImageView(QGraphicsView):
             self._draw_ruler()
             self._emit_ruler_changed()
             return
-        self._ruler_points = (self._ruler_pending_start, Point(scene_pos.x(), scene_pos.y()))
+        points = (self._ruler_pending_start, Point(scene_pos.x(), scene_pos.y()))
+        self._ruler_points = points
         self._ruler_pending_start = None
         self._roi_drag_mode = None
         self._draw_ruler()
         self._emit_ruler_changed()
+        if self.on_ruler_completed is not None:
+            self.on_ruler_completed(points)
 
     def _ruler_tool_move(self, scene_pos: QPointF) -> bool:
         if self._roi_drag_mode == "ruler_create" and self._ruler_pending_start is not None:

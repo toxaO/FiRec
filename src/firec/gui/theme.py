@@ -96,6 +96,7 @@ QToolButton[imageTool="true"]:hover { background: #e1eff2; border-color: #78b4c1
 QToolButton[imageTool="true"]:checked { background: #d6edf1; border-color: #087f8c; }
 QToolButton[imageTool="true"]:disabled { background: #f1f4f6; border-color: #dce5eb; }
 QScrollArea { border: 0; background: transparent; }
+QLabel[analysisHelp="true"] { background: #eaf0f4; border: 1px solid #dce5eb; border-radius: 4px; }
 QTreeWidget, QTableWidget { background: #ffffff; alternate-background-color: #f3f7fa;
     border: 1px solid #dce5eb; border-radius: 4px;
     selection-background-color: #d6edf1; selection-color: #253b49; gridline-color: #e5edf2; }

@@ -678,10 +678,14 @@ def test_open_button_loads_image_from_entered_path(qapp, isolated_settings, tmp_
 def test_operation_help_stays_on_current_stage_and_shortcuts_have_tooltip(qapp, isolated_settings):
     window = _make_window(qapp)
     stage_help = window.operation_help.text()
+    assert window.operation_help.property("analysisHelp") is True
+    assert window.operation_help_scroll.widget() is window.operation_help
+    assert not window.tool_hint.property("analysisHelp")
     window.pan_tool_button.click()
     assert window.operation_help.text() == stage_help
     window.ruler_tool_button.click()
     assert window.operation_help.text() == stage_help
+    assert "2点" in window.tool_hint.text()
     window.ruler_tool_button.click()
     assert window.operation_help.text() == stage_help
     window.go_to_stage("light")
@@ -1247,6 +1251,37 @@ def test_ruler_uses_pixel_units_without_resolution(qapp, isolated_settings):
     w._set_analyse_dpi_mode("numeric")
     w.pixel_length.setText("0.1")
     assert "0.5 mm" in w.tool_result_label.text()
+    assert "5.0 px" in w.tool_result_label.text()
+
+
+def test_ruler_calibrates_from_two_clicks_and_persists_spacing(qapp, isolated_settings):
+    from PySide6.QtCore import Qt
+
+    w = _loaded_navigation_window(qapp, place_laser=False)
+    w._set_analyse_dpi_mode("none")
+    w.ruler_tool_button.click()
+    stage_help = w.operation_help.text()
+    w.ruler_calibrate_button.click()
+    assert w.operation_help.text() == stage_help
+    assert "既知の長さ" in w.tool_hint.text()
+    w.ruler_known_length.setText("12.5")
+    positions = [w.view.mapFromScene(x, 100) for x in (100, 200)]
+    start, end = [w.view.mapToScene(position) for position in positions]
+    distance = end.x() - start.x()
+
+    QTest.mouseClick(w.view.viewport(), Qt.LeftButton, pos=positions[0])
+    assert w.calibration_method.currentData() == "none"
+    QTest.mouseClick(w.view.viewport(), Qt.LeftButton, pos=positions[1])
+
+    assert w.calibration_method.currentData() == "numeric"
+    assert float(w.pixel_length.text()) == pytest.approx(12.5 / distance)
+    assert "12.5 mm" in w.tool_result_label.text()
+    assert f"{distance:.1f} px" in w.tool_result_label.text()
+    restored = _make_window(qapp)
+    assert restored.calibration_method.currentData() == "numeric"
+    assert restored.pixel_length.text() == w.pixel_length.text()
+    restored.close()
+    w.close()
 
 
 def test_legacy_image_mode_maps_to_tag(qapp, isolated_settings):
